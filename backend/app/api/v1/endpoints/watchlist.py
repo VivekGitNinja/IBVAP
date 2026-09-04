@@ -38,10 +38,11 @@ def list_watchlist(db: Session = Depends(get_db)):
     subjects = db.query(Watchlist).order_by(desc(Watchlist.created_at)).all()
     results = []
     for s in subjects:
+        valid_img = s.face_image_path if (s.face_image_path and s.face_image_path != "none" and os.path.exists(s.face_image_path)) else None
         results.append(WatchlistOut(
             id=s.id,
             name=s.name,
-            face_image_path=s.face_image_path,
+            face_image_path=valid_img,
             has_embedding=bool(s.embedding),
             notes=s.notes,
             created_by=s.created_by,

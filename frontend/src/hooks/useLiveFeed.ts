@@ -7,8 +7,15 @@ export function useLiveEvents() {
   const setWsStatus = useTacticalStore((s) => s.setWsStatus);
   const addToast = useTacticalStore((s) => s.addToast);
   const fetchInitialData = useTacticalStore((s) => s.fetchInitialData);
+  const showLoginModal = useTacticalStore((s) => s.showLoginModal);
 
   const connect = useCallback(() => {
+    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('ibvap_token') : null;
+    if (!token) {
+      setWsStatus('disconnected');
+      return;
+    }
+
     let url = 'ws://127.0.0.1:8001/ws/events';
     if (import.meta.env.VITE_API_URL) {
       url = import.meta.env.VITE_API_URL.replace(/^http/, 'ws').replace(/\/$/, '') + '/ws/events';
@@ -21,10 +28,7 @@ export function useLiveEvents() {
       }
     }
 
-    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('ibvap_token') : null;
-    if (token) {
-      url += `?token=${encodeURIComponent(token)}`;
-    }
+    url += `?token=${encodeURIComponent(token)}`;
 
     setWsStatus('connecting');
 
@@ -68,12 +72,14 @@ export function useLiveEvents() {
   }, [setWsStatus, addToast, fetchInitialData]);
 
   useEffect(() => {
-    connect();
+    if (!showLoginModal) {
+      connect();
+    }
     return () => {
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (wsRef.current) wsRef.current.close();
     };
-  }, [connect]);
+  }, [connect, showLoginModal]);
 }
 
 export function useLiveVideoFeed(cameraId: number, onFpsUpdate?: (fps: number) => void) {
@@ -88,6 +94,9 @@ export function useLiveVideoFeed(cameraId: number, onFpsUpdate?: (fps: number) =
   useEffect(() => {
     if (!cameraId) return;
 
+    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('ibvap_token') : null;
+    if (!token) return;
+
     let isSubscribed = true;
     let wsUrl = `ws://127.0.0.1:8001/ws/live/${cameraId}`;
     if (typeof window !== 'undefined') {
@@ -99,10 +108,7 @@ export function useLiveVideoFeed(cameraId: number, onFpsUpdate?: (fps: number) =
       }
     }
 
-    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('ibvap_token') : null;
-    if (token) {
-      wsUrl += `?token=${encodeURIComponent(token)}`;
-    }
+    wsUrl += `?token=${encodeURIComponent(token)}`;
 
     try {
       const ws = new WebSocket(wsUrl);

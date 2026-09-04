@@ -266,7 +266,7 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
                 {suspects.map((s) => (
                   <div key={s.id} className="frs-suspect-card" style={{ background: "rgba(0,0,0,0.3)", borderRadius: 6, border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden" }}>
                     <div style={{ height: 120, background: "#02060c", position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      {s.face_image_path ? (
+                      {s.face_image_path && s.face_image_path !== "none" ? (
                         <img
                           src={`/api/v1/watchlist/${s.id}/image`}
                           alt={s.name}

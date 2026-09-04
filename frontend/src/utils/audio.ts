@@ -1,6 +1,7 @@
 /* ─── Web Audio Tactical Sound Synthesizer ───────────────────── */
 export function playTacticalTone(type: 'alert' | 'click' | 'verify' | 'escalate') {
   if (typeof window === 'undefined') return;
+  if (typeof navigator !== 'undefined' && navigator.webdriver) return;
   const muted = localStorage.getItem('ibvap_muted') === 'true';
   if (muted) return;
 

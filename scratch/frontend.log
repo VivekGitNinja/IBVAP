@@ -1189,3 +1189,40 @@ Error: connect ECONNREFUSED 127.0.0.1:8001
 1:36:54 AM [vite] hmr update /src/views/IncidentTriageView.tsx
 1:37:00 AM [vite] hmr update /src/views/AuditView.tsx
 1:59:08 AM [vite] hmr update /src/components/TopBar.tsx
+2:13:41 AM [vite] hmr update /src/views/FRSView.tsx
+2:13:48 AM [vite] hmr update /src/main.tsx
+2:13:48 AM [vite] hmr invalidate /src/main.tsx Could not Fast Refresh ("true" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+2:13:48 AM [vite] page reload src/main.tsx
+2:13:53 AM [vite] hmr update /src/main.tsx
+2:13:53 AM [vite] hmr invalidate /src/main.tsx Could not Fast Refresh ("true" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+2:13:53 AM [vite] page reload src/main.tsx
+2:13:57 AM [vite] hmr update /src/main.tsx, /src/views/AnalyticsDashboard.tsx, /src/components/Sidebar.tsx, /src/views/AuditView.tsx, /src/views/EvidenceView.tsx, /src/views/ANPRView.tsx, /src/components/PatrolMode.tsx, /src/views/ThermalDroneView.tsx, /src/views/FRSView.tsx, /src/views/MapView.tsx, /src/views/IncidentTriageView.tsx, /src/views/QRTView.tsx, /src/views/LiveMonitorView.tsx, /src/views/MediaAnalysisView.tsx, /src/components/TopBar.tsx
+2:13:57 AM [vite] hmr invalidate /src/main.tsx Could not Fast Refresh ("true" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+2:13:57 AM [vite] page reload src/main.tsx
+2:13:57 AM [vite] hmr invalidate /src/components/PatrolMode.tsx Could not Fast Refresh ("PATROL_STEPS" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+2:13:57 AM [vite] hmr update /src/main.tsx
+2:13:57 AM [vite] hmr invalidate /src/views/MapView.tsx Could not Fast Refresh ("getTileLayerConfig" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+2:13:57 AM [vite] hmr update /src/main.tsx
+2:23:39 AM [vite] http proxy error: /api/v1/cameras/1/snapshot?t=38
+Error: connect ECONNREFUSED 127.0.0.1:8001
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:2017:16)
+2:23:39 AM [vite] http proxy error: /api/v1/cameras/2/snapshot?t=38
+Error: connect ECONNREFUSED 127.0.0.1:8001
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:2017:16)
+2:23:39 AM [vite] http proxy error: /api/v1/cameras/3/snapshot?t=38
+Error: connect ECONNREFUSED 127.0.0.1:8001
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:2017:16)
+2:23:39 AM [vite] http proxy error: /api/v1/cameras/4/snapshot?t=38
+Error: connect ECONNREFUSED 127.0.0.1:8001
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:2017:16)
+2:23:41 AM [vite] http proxy error: /api/v1/cameras/1/snapshot?t=39
+Error: connect ECONNREFUSED 127.0.0.1:8001
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:2017:16)
+2:23:41 AM [vite] http proxy error: /api/v1/cameras/2/snapshot?t=39
+Error: connect ECONNREFUSED 127.0.0.1:8001
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:2017:16)
+2:23:41 AM [vite] http proxy error: /api/v1/cameras/3/snapshot?t=39
+Error: connect ECONNREFUSED 127.0.0.1:8001
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:2017:16)
+
+Node.js v26.7.0

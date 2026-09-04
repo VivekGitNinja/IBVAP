@@ -22,3 +22,5 @@ build/
 test-results/
 playwright-report/
 .DS_Store
+*.zip
+scratch/
