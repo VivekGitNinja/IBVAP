@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700&family=Inter:wght@400;600&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #040a12; color: #d0dae6; font-family: 'Inter', sans-serif; padding: 20px; }
+.header { text-align: center; margin-bottom: 20px; }
+.header h1 { font-family: 'Rajdhani', sans-serif; font-size: 24px; color: #00e5c8; letter-spacing: 3px; }
+.header .sub { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #5a6a7a; margin-top: 4px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 1200px; margin: 0 auto; }
+.card { background: #111b28; border: 1px solid #1c2a3a; border-radius: 8px; overflow: hidden; }
+.card img { width: 100%; display: block; }
+.card .info { padding: 12px; }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 16px; max-width: 1200px; margin-left: auto; margin-right: auto; }
+.stat { background: #111b28; border: 1px solid #1c2a3a; border-radius: 6px; padding: 12px; text-align: center; }
+.stat b { font-family: 'Rajdhani', sans-serif; font-size: 28px; display: block; color: #eaf2fa; }
+.stat b.green { color: #30e8a0; }
+.stat b.cyan { color: #00e5c8; }
+.stat b.amber { color: #f0a030; }
+.stat span { font-family: 'JetBrains Mono', monospace; font-size: 9px; color: #5a6a7a; letter-spacing: 1px; text-transform: uppercase; }
+.objects { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; max-width: 1200px; margin-left: auto; margin-right: auto; }
+.obj { background: #0c141e; border: 1px solid #1c2a3a; border-radius: 4px; padding: 6px 10px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #00e5c8; }
+.obj .count { color: #eaf2fa; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>🎯 YOLO26n REAL DETECTION RESULTS</h1>
+  <div class="sub">Model: YOLO26n ONNX (2.4M params) | 46 FPS CPU | 1920×1080 | 171 frames</div>
+</div>
+
+<div class="stats">
+  <div class="stat"><b class="cyan">615</b><span>Total Detections</span></div>
+  <div class="stat"><b class="green">46</b><span>Processing FPS</span></div>
+  <div class="stat"><b class="amber">3.7s</b><span>Processing Time</span></div>
+  <div class="stat"><b>171</b><span>Frames Scanned</span></div>
+</div>
+
+<div class="objects">
+  <div class="obj">🚗 car <span class="count">371x</span></div>
+  <div class="obj">🪑 bench <span class="count">107x</span></div>
+  <div class="obj">🚌 bus <span class="count">76x</span></div>
+  <div class="obj">🚛 truck <span class="count">45x</span></div>
+  <div class="obj">🚶 person <span class="count">6x</span></div>
+  <div class="obj">🐕 dog <span class="count">5x</span></div>
+  <div class="obj">🚦 traffic light <span class="count">5x</span></div>
+</div>
+
+<div class="grid" style="margin-top: 16px;">
+  <div class="card">
+    <img src="detection_frame.jpg" alt="Frame 60">
+    <div class="info" style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #5a6a7a;">Frame 60 — Cars, Trucks, Bench detected</div>
+  </div>
+  <div class="card">
+    <img src="detection_frame2.jpg" alt="Frame 120">
+    <div class="info" style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #5a6a7a;">Frame 120 — Cars, Bus, Person detected</div>
+  </div>
+</div>
+</body>
+</html>

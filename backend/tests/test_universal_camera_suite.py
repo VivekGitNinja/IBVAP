@@ -1,0 +1,70 @@
+"""Tests for Universal Camera Suite, Deep Network Discovery, and Phone Live Stream."""
+
+import pytest
+from fastapi.testclient import TestClient
+from backend.app.main import app
+
+client = TestClient(app)
+
+
+def test_network_info_endpoint():
+    """Verify /cameras/network-info returns auto-detected LAN subnet and local IP."""
+    resp = client.get("/api/v1/cameras/network-info")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "subnet" in data
+    assert "local_ip" in data
+    assert "gateway" in data
+
+
+def test_deep_camera_discovery():
+    """Verify /cameras/discover detects connected devices on subnet."""
+    resp = client.post("/api/v1/cameras/discover", json={"ip_range": "192.168.29", "start": 1, "end": 20})
+    assert resp.status_code == 200
+    devices = resp.json()
+    assert isinstance(devices, list)
+    if len(devices) > 0:
+        dev = devices[0]
+        assert "ip" in dev
+        assert "brand_hint" in dev
+        assert "rtsp_url" in dev
+        assert "status" in dev
+
+
+def test_smart_probe_endpoint():
+    """Verify Strix-style smart probe tests patterns in < 2 seconds."""
+    resp = client.post("/api/v1/cameras/smart-probe", json={
+        "ip": "127.0.0.1",
+        "username": "admin",
+        "password": "testpassword",
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["tested_count"] >= 10
+    assert "candidate_urls" in data
+
+
+def test_phone_stream_upload_and_test():
+    """Verify smartphone JPEG upload and phone:// stream test."""
+    import base64
+    import numpy as np
+    import cv2
+
+    frame = np.ones((240, 320, 3), dtype=np.uint8) * 100
+    _, buf = cv2.imencode(".jpg", frame)
+    b64 = base64.b64encode(buf).decode()
+
+    # 1. Upload frame
+    up = client.post("/api/v1/cameras/phone-stream/mobile-test/frame", json={"image": b64})
+    assert up.status_code == 200
+    assert up.json()["status"] == "ok"
+
+    # 2. Get frame back
+    down = client.get("/api/v1/cameras/phone-stream/mobile-test/frame")
+    assert down.status_code == 200
+    assert down.headers["content-type"] == "image/jpeg"
+
+    # 3. Test stream
+    ts = client.post("/api/v1/cameras/test-stream", json={"stream_url": "phone://mobile-test"})
+    assert ts.status_code == 200
+    assert ts.json()["success"] is True

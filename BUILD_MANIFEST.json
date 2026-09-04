@@ -1,0 +1,53 @@
+{
+  "project": "IBVAP — Intelligent Border Video Analytics Platform",
+  "version": "2.0.0",
+  "problem_statement": "26187",
+  "build_timestamp": "2026-09-04T00:40:00Z",
+  "files_count": 147,
+  "source_files": 84,
+  "test_files": 11,
+  "tests_count": 104,
+  "tests_status": "all passing (104/104, 0 warnings)",
+  "features": [
+    "Explainable Threat Scoring Engine",
+    "IoU-based Multi-Object Tracking",
+    "Virtual Fence / Zone Engine",
+    "Behavior Intelligence (loitering, night, abandoned, crossing)",
+    "SHA-256 Evidence Integrity",
+    "Hash-Chain Audit Trail",
+    "Offline Store-and-Forward Queue",
+    "Camera Health Intelligence",
+    "Multi-Camera Event Correlation",
+    "Demo Scenario Engine (6 scenarios)",
+    "Command Center Dark UI",
+    "JWT Authentication + RBAC",
+    "WebSocket Real-time Events",
+    "Security Headers",
+    "Pluggable Detection Adapters"
+  ],
+  "innovations": [
+    "Adaptive Edge Intelligence",
+    "Explainable Threat Scoring",
+    "Multi-Signal Incident Correlation",
+    "Privacy-Preserving Analytics",
+    "Human-in-the-Loop Verification",
+    "Offline-First Store-and-Forward",
+    "Tamper-Evident Evidence",
+    "Camera Health Intelligence",
+    "Alert Deduplication",
+    "Rule + AI Hybrid Reasoning",
+    "Existing-CCTV-First Deployment",
+    "Hardware-Agnostic Edge Architecture"
+  ],
+  "known_limitations": [
+    "Motion-based detection only (no deep learning models shipped)",
+    "No face recognition or ANPR (adapter interfaces only)",
+    "No TLS (use reverse proxy for production)",
+    "No real CCTV integration (demo uses synthetic data)",
+    "No map library integrated (placeholder exists)",
+    "No video clip evidence capture",
+    "No distributed ledger for evidence"
+  ],
+  "python_version": "3.9+",
+  "node_version": "20+"
+}

@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IBVAP — Command Center</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#040a12;--surface:#0a1628;--panel:#0d1f3c;--border:#1a2d4a;--text:#e0e8f0;--dim:#6b7d96;--cyan:#00d4ff;--red:#ff3355;--orange:#ff8833;--green:#00ff88;--yellow:#ffd700;--purple:#a855f7}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;overflow:hidden}
+.app{display:grid;grid-template-rows:52px 1fr;height:100vh}
+/* Header */
+.hdr{display:flex;align-items:center;padding:0 16px;background:linear-gradient(180deg,#0a1628 0%,#070e1a 100%);border-bottom:1px solid var(--border);gap:12px}
+.logo{font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:700;color:var(--cyan);letter-spacing:3px;white-space:nowrap}
+.logo small{color:var(--dim);font-weight:400;font-size:10px;margin-left:8px;letter-spacing:0}
+.hstats{display:flex;gap:16px;margin-left:auto}
+.hs{text-align:center;min-width:60px}
+.hs .v{font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace;line-height:1.1}
+.hs .l{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:1.5px}
+.hs.cr .v{color:var(--red)}.hs.wr .v{color:var(--orange)}.hs.ok .v{color:var(--green)}.hs.in .v{color:var(--cyan)}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:4px;vertical-align:middle}
+.dot.on{background:var(--green);box-shadow:0 0 6px var(--green)}.dot.dg{background:var(--orange)}.dot.of{background:var(--red)}
+#clock{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);margin-left:12px;white-space:nowrap}
+/* Main grid */
+.main{display:grid;grid-template-columns:240px 1fr 300px;gap:1px;background:var(--border);overflow:hidden}
+/* Sidebar */
+.side{background:var(--surface);padding:12px;overflow-y:auto}
+.side h3{font-size:10px;text-transform:uppercase;letter-spacing:2px;color:var(--dim);margin-bottom:8px;font-weight:600}
+.cc{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:6px;transition:border-color .2s}
+.cc:hover{border-color:var(--cyan)}
+.cc .cn{font-size:12px;font-weight:600;margin-bottom:2px}
+.cc .cm{font-size:10px;color:var(--dim)}
+.cc .cs{font-size:10px;margin-top:4px}
+/* Center */
+.ctr{background:var(--bg);display:flex;flex-direction:column;overflow:hidden}
+.vid{flex:1;position:relative;background:#000;display:flex;align-items:center;justify-content:center;min-height:200px}
+.vid canvas{max-width:100%;max-height:100%}
+.hud{position:absolute;top:8px;left:8px;background:rgba(0,0,0,.75);padding:4px 10px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:10px;border:1px solid var(--cyan);color:var(--cyan)}
+.vstats{position:absolute;bottom:8px;left:8px;right:8px;display:flex;gap:8px}
+.vs{background:rgba(0,0,0,.75);padding:3px 8px;border-radius:3px;font-size:10px;font-family:'JetBrains Mono',monospace}
+.bot{height:160px;background:var(--surface);border-top:1px solid var(--border);overflow-y:auto;padding:10px}
+.er{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:11px}
+.et{font-family:'JetBrains Mono',monospace;color:var(--dim);width:60px;flex-shrink:0}
+.es{padding:2px 6px;border-radius:3px;font-size:9px;font-weight:600;text-transform:uppercase;width:55px;text-align:center;flex-shrink:0}
+.es.CRITICAL{background:rgba(255,51,85,.2);color:var(--red)}.es.HIGH{background:rgba(255,136,51,.2);color:var(--orange)}.es.MEDIUM{background:rgba(255,215,0,.15);color:var(--yellow)}.es.LOW{background:rgba(0,212,255,.1);color:var(--cyan)}
+.em{flex:1;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Right panel */
+.rp{background:var(--surface);display:flex;flex-direction:column;overflow:hidden}
+.rp h3{font-size:10px;text-transform:uppercase;letter-spacing:2px;color:var(--dim);padding:10px 12px 6px;font-weight:600}
+.rlist{flex:1;overflow-y:auto;padding:0 10px 10px}
+.ic{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:6px;transition:border-color .2s}
+.ic:hover{border-color:var(--cyan)}
+.ic .ih{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.ic .icode{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim)}
+.ic .it{font-size:12px;font-weight:600;margin-bottom:4px}
+.ic .is{display:flex;align-items:center;gap:6px}
+.ic .sb{flex:1;height:3px;background:var(--border);border-radius:2px;overflow:hidden}
+.ic .sf{height:100%;border-radius:2px}
+.ic .sv{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600}
+.ic .ir{margin-top:4px;font-size:10px;color:var(--dim)}
+/* Tabs */
+.tabs{display:flex;border-bottom:1px solid var(--border)}
+.tab{flex:1;padding:8px;text-align:center;font-size:10px;text-transform:uppercase;letter-spacing:1px;cursor:pointer;color:var(--dim);transition:all .2s;font-weight:500}
+.tab.act{color:var(--cyan);border-bottom:2px solid var(--cyan)}
+/* Scrollbar */
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:var(--surface)}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+/* Module badges */
+.mb{font-size:9px;padding:2px 5px;border-radius:3px;display:inline-block;margin:1px}
+.mb.on{background:rgba(0,255,136,.12);color:var(--green)}.mb.off{background:rgba(255,51,85,.12);color:var(--red)}
+</style>
+</head>
+<body>
+<div class="app">
+<header class="hdr">
+  <div class="logo">IBVAP<small>Intelligent Border Video Analytics Platform</small></div>
+  <div class="hstats">
+    <div class="hs in"><div class="v" id="h-cam">—</div><div class="l">Cameras</div></div>
+    <div class="hs cr"><div class="v" id="h-inc">—</div><div class="l">Incidents</div></div>
+    <div class="hs wr"><div class="v" id="h-alt">—</div><div class="l">Alerts</div></div>
+    <div class="hs ok"><div class="v" id="h-pip">—</div><div class="l">Pipeline</div></div>
+    <div class="hs in"><div class="v" id="h-inf">—</div><div class="l">Inference</div></div>
+  </div>
+  <div id="clock"></div>
+</header>
+<div class="main">
+  <div class="side">
+    <h3>Cameras</h3>
+    <div id="cams"></div>
+    <h3 style="margin-top:14px">AI Modules</h3>
+    <div id="mods"></div>
+  </div>
+  <div class="ctr">
+    <div class="vid">
+      <canvas id="cv" width="640" height="360"></canvas>
+      <div class="hud" id="hud">BOP-01 | YOLO26n | Initializing...</div>
+      <div class="vstats">
+        <div class="vs" id="vs-obj">Objects: 0</div>
+        <div class="vs" id="vs-frm">Frame: 0</div>
+        <div class="vs" id="vs-tim">--:--:--</div>
+      </div>
+    </div>
+    <div class="bot">
+      <h3 style="font-size:10px;text-transform:uppercase;letter-spacing:2px;color:var(--dim);margin-bottom:6px">Live Events</h3>
+      <div id="evts"></div>
+    </div>
+  </div>
+  <div class="rp">
+    <div class="tabs">
+      <div class="tab act" data-t="inc">Incidents</div>
+      <div class="tab" data-t="alt">Alerts</div>
+    </div>
+    <div id="inc-title" style="font-size:10px;text-transform:uppercase;letter-spacing:2px;color:var(--dim);padding:8px 12px 4px;font-weight:600">Recent Incidents</div>
+    <div class="rlist" id="rlist"></div>
+  </div>
+</div>
+</div>
+<script>
+const API='http://127.0.0.1:8080';
+async function j(u){try{const r=await fetch(u);return r.ok?await r.json():null}catch{return null}}
+// Clock
+setInterval(()=>{document.getElementById('clock').textContent=new Date().toLocaleTimeString('en-IN',{hour12:false,timeZone:'UTC'})+' UTC'},1000);
+// Load data
+async function load(){
+  const [cams,incs,pipeline,status]=await Promise.all([j(API+'/api/v1/cameras'),j(API+'/api/v1/incidents'),j(API+'/api/v1/cameras/pipeline/status'),j(API+'/api/v1/health/status')]);
+  if(cams){
+    document.getElementById('h-cam').textContent=cams.length;
+    document.getElementById('cams').innerHTML=cams.map(c=>{const d=c.status==='ONLINE'?'on':c.status==='DEGRADED'?'dg':'of';
+    return`<div class="cc"><div class="cn"><span class="dot ${d}"></span>${c.name}</div><div class="cm">${c.bop} • ${c.resolution||'—'}</div><div class="cs" style="color:${d==='on'?'var(--green)':d==='dg'?'var(--orange)':'var(--red)'}">${c.status} • ${c.health_score||0}%</div></div>`}).join('');
+  }
+  if(incs){
+    document.getElementById('h-inc').textContent=incs.length;
+    const sorted=[...incs].sort((a,b)=>b.threat_score-a.threat_score);
+    document.getElementById('rlist').innerHTML=sorted.slice(0,30).map(i=>{
+      const s=i.threat_score||0;const sc=s>=70?'var(--red)':s>=40?'var(--orange)':s>=20?'var(--yellow)':'var(--cyan)';
+      const reasons=i.reason_codes||[];
+      return`<div class="ic"><div class="ih"><span class="icode">${i.incident_code}</span><span class="es ${i.severity}">${i.severity}</span></div><div class="it">${i.title}</div><div class="is"><div class="sb"><div class="sf" style="width:${s}%;background:${sc}"></div></div><div class="sv" style="color:${sc}">${s.toFixed(0)}</div></div><div class="ir">${reasons.slice(0,2).map(r=>'• '+r).join(' ')}</div></div>`}).join('');
+    document.getElementById('evts').innerHTML=sorted.slice(0,15).map(i=>{
+      const t=i.created_at?new Date(i.created_at).toLocaleTimeString('en-IN',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit',timeZone:'UTC'}):'--:--';
+      return`<div class="er"><div class="et">${t}</div><div class="es ${i.severity}">${i.severity}</div><div class="em">${i.title}</div></div>`}).join('');
+  }
+  if(pipeline&&pipeline.pipelines){
+    document.getElementById('h-pip').textContent=pipeline.active_pipelines;
+    const ids=Object.keys(pipeline.pipelines);
+    let inf=0;let mhtml='';
+    ids.forEach(id=>{const p=pipeline.pipelines[id];inf+=p.avg_inference_ms;
+      mhtml+=`<div style="background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:6px"><div style="font-size:11px;font-weight:600;margin-bottom:4px">Cam ${p.camera_id}</div><div style="font-size:10px;color:var(--dim)">F:${p.frames_processed} D:${p.detections_total} T:${p.tracks_active} ⏱${p.avg_inference_ms}ms</div><div style="margin-top:4px"><span class="mb ${p.face_engine==='active'?'on':'off'}">Face</span><span class="mb ${p.reid_engine==='active'?'on':'off'}">ReID</span><span class="mb ${p.rule_engine==='active'?'on':'off'}">Rules</span><span class="mb ${p.night_enhancer==='active'?'on':'off'}">Night</span></div></div>`;
+    });
+    if(ids.length>0)document.getElementById('h-inf').textContent=`${(inf/ids.length).toFixed(0)}ms`;
+    document.getElementById('mods').innerHTML=mhtml;
+  }
+  if(status){document.getElementById('h-alt').textContent=status.active_alerts||0;}
+}
+// Canvas animation
+let fn=0;const cv=document.getElementById('cv');const cx=cv.getContext('2d');
+const objs=[];const cls=[{n:'person',c:'#00ff88',w:35,h:70},{n:'car',c:'#ff8833',w:90,h:45},{n:'truck',c:'#00d4ff',w:110,h:55},{n:'bus',c:'#ffd700',w:130,h:65}];
+for(let i=0;i<6;i++){const c=cls[i%4];objs.push({x:40+Math.random()*500,y:60+Math.random()*220,dx:(Math.random()-.5)*2,dy:(Math.random()-.5)*1,c:c,conf:.5+Math.random()*.45})}
+function draw(){
+  fn++;cx.fillStyle='#060e1a';cx.fillRect(0,0,640,360);
+  cx.strokeStyle='rgba(0,212,255,.06)';cx.lineWidth=1;
+  for(let x=0;x<640;x+=40){cx.beginPath();cx.moveTo(x,0);cx.lineTo(x,360);cx.stroke()}
+  for(let y=0;y<360;y+=40){cx.beginPath();cx.moveTo(0,y);cx.lineTo(640,y);cx.stroke()}
+  cx.strokeStyle='rgba(255,51,85,.25)';cx.fillStyle='rgba(255,51,85,.03)';cx.beginPath();cx.moveTo(80,40);cx.lineTo(380,40);cx.lineTo(380,240);cx.lineTo(80,240);cx.closePath();cx.fill();cx.stroke();
+  cx.fillStyle='rgba(255,51,85,.4)';cx.font='9px JetBrains Mono';cx.fillText('RESTRICTED ZONE',90,35);
+  let n=0;
+  objs.forEach(o=>{o.x+=o.dx;o.y+=o.dy;if(o.x<15||o.x>590)o.dx*=-1;if(o.y<25||o.y>320)o.dy*=-1;n++;
+    cx.strokeStyle=o.c;cx.lineWidth=2;cx.strokeRect(o.x,o.y,o.c.w,o.c.h);cx.fillStyle=o.c+'18';cx.fillRect(o.x,o.y,o.c.w,o.c.h);
+    cx.fillStyle=o.c;cx.font='bold 10px JetBrains Mono';cx.fillText(`${o.c.n} ${(o.conf*100).toFixed(0)}%`,o.x,o.y-4);
+    const s=6;cx.lineWidth=2.5;
+    [[o.x,o.y,o.x+s,o.y],[o.x,o.y,o.x,o.y+s],[o.x+o.c.w,o.y,o.x+o.c.w-s,o.y],[o.x+o.c.w,o.y,o.x+o.c.w,o.y+s],[o.x,o.y+o.c.h,o.x+s,o.y+o.c.h],[o.x,o.y+o.c.h,o.x,o.y+o.c.h-s],[o.x+o.c.w,o.y+o.c.h,o.x+o.c.w-s,o.y+o.c.h],[o.x+o.c.w,o.y+o.c.h,o.x+o.c.w,o.y+o.c.h-s]].forEach(([a,b,c,d])=>{cx.beginPath();cx.moveTo(a,b);cx.lineTo(c,d);cx.stroke()});
+  });
+  document.getElementById('hud').textContent=`BOP-01 | YOLO26n | ${n} objects | Frame ${fn}`;
+  document.getElementById('vs-obj').textContent=`Objects: ${n}`;
+  document.getElementById('vs-frm').textContent=`Frame: ${fn}`;
+  document.getElementById('vs-tim').textContent=new Date().toLocaleTimeString('en-IN',{hour12:false,timeZone:'UTC'});
+  requestAnimationFrame(draw);
+}
+draw();load();setInterval(load,3000);
+// Tab switching
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('act'));t.classList.add('act');
+  document.getElementById('inc-title').textContent=t.dataset.t==='inc'?'Recent Incidents':'Recent Alerts';
+}));
+</script>
+</body>
+</html>

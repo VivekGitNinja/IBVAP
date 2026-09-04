@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700&family=Inter:wght@400;600&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<script src="frames_data.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#040a12;color:#d0dae6;font-family:'Inter',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:12px}
+h1{font-family:'Rajdhani',sans-serif;font-size:22px;color:#00e5c8;letter-spacing:3px;margin-bottom:2px}
+.sub{font-family:'JetBrains Mono',monospace;font-size:10px;color:#5a6a7a;margin-bottom:12px;text-align:center}
+.player{position:relative;width:100%;max-width:720px;border:2px solid #1c2a3a;border-radius:8px;overflow:hidden;background:#000}
+.player img{width:100%;display:block;min-height:360px}
+.controls{display:flex;align-items:center;gap:10px;margin-top:10px;max-width:720px;width:100%}
+.btn{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:14px;padding:8px 20px;border:1px solid #1c2a3a;border-radius:4px;cursor:pointer;transition:all .15s}
+.btn-play{background:linear-gradient(135deg,#00b89e,#00e5c8);color:#040a12;border-color:#00e5c8}
+.btn-play:hover{box-shadow:0 0 12px rgba(0,229,200,.4)}
+.btn-stop{background:#111b28;color:#8094a8}
+.btn-stop:hover{color:#e83040;border-color:#e83040}
+.progress{flex:1;height:4px;background:#1c2a3a;border-radius:2px;overflow:hidden}
+.progress-fill{height:100%;background:#00e5c8;transition:width .05s linear}
+.frame-info{font-family:'JetBrains Mono',monospace;font-size:11px;color:#5a6a7a;min-width:100px;text-align:right}
+.frame-info .cur{color:#00e5c8;font-weight:700}
+.speed{font-family:'JetBrains Mono',monospace;font-size:10px;color:#5a6a7a}
+.stats{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;justify-content:center}
+.stat{background:#111b28;border:1px solid #1c2a3a;border-radius:4px;padding:6px 14px;text-align:center}
+.stat b{font-family:'Rajdhani',sans-serif;font-size:20px;display:block}
+.stat b.c{color:#00e5c8}
+.stat b.g{color:#30e8a0}
+.stat b.a{color:#f0a030}
+.stat span{font-family:'JetBrains Mono',monospace;font-size:7px;color:#5a6a7a;letter-spacing:1px;text-transform:uppercase}
+</style>
+</head>
+<body>
+<h1>🎯 YOLO26n REAL-TIME DETECTION</h1>
+<div class="sub">YOLO26n ONNX | 46 FPS CPU | 615 detections | 7 object classes</div>
+
+<div class="player">
+  <img id="frame" src="" alt="Detection Frame">
+</div>
+
+<div class="controls">
+  <button class="btn btn-play" id="playBtn" onclick="togglePlay()">▶ PLAY</button>
+  <button class="btn btn-stop" onclick="stop()">■ STOP</button>
+  <div class="progress"><div class="progress-fill" id="progress"></div></div>
+  <div class="frame-info"><span class="cur" id="curFrame">0</span> / <span id="totalFrames">0</span></div>
+</div>
+
+<div class="stats">
+  <div class="stat"><b class="c">615</b><span>Detections</span></div>
+  <div class="stat"><b class="g">46</b><span>FPS</span></div>
+  <div class="stat"><b class="a">30</b><span>Playback FPS</span></div>
+  <div class="stat"><b>7</b><span>Classes</span></div>
+</div>
+
+<script>
+let idx = 0, playing = false, timer = null;
+const img = document.getElementById('frame');
+const progress = document.getElementById('progress');
+const curEl = document.getElementById('curFrame');
+const totalEl = document.getElementById('totalFrames');
+const playBtn = document.getElementById('playBtn');
+
+totalEl.textContent = FRAMES.length;
+img.src = 'data:image/jpeg;base64,' + FRAMES[0];
+
+function togglePlay() {
+  if (playing) { stop(); } else { play(); }
+}
+
+function play() {
+  playing = true;
+  playBtn.textContent = '⏸ PAUSE';
+  playBtn.style.background = 'linear-gradient(135deg,#d08820,#f0a030)';
+  playBtn.style.color = '#040a12';
+  playBtn.style.borderColor = '#f0a030';
+  timer = setInterval(() => {
+    idx = (idx + 1) % FRAMES.length;
+    img.src = 'data:image/jpeg;base64,' + FRAMES[idx];
+    curEl.textContent = idx + 1;
+    progress.style.width = ((idx + 1) / FRAMES.length * 100) + '%';
+  }, 33); // ~30 FPS
+}
+
+function stop() {
+  playing = false;
+  clearInterval(timer);
+  playBtn.textContent = '▶ PLAY';
+  playBtn.style.background = '';
+  playBtn.style.color = '';
+  playBtn.style.borderColor = '';
+}
+</script>
+</body>
+</html>

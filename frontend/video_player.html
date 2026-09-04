@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700&family=Inter:wght@400;600&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #040a12; color: #d0dae6; font-family: 'Inter', sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+h1 { font-family: 'Rajdhani', sans-serif; font-size: 28px; color: #00e5c8; letter-spacing: 3px; margin-bottom: 4px; }
+.sub { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #5a6a7a; margin-bottom: 16px; }
+.video-wrap { position: relative; width: 100%; max-width: 960px; border: 2px solid #1c2a3a; border-radius: 8px; overflow: hidden; background: #000; }
+video { width: 100%; display: block; }
+.stats { display: flex; gap: 12px; margin-top: 12px; flex-wrap: wrap; justify-content: center; }
+.stat { background: #111b28; border: 1px solid #1c2a3a; border-radius: 6px; padding: 8px 16px; text-align: center; }
+.stat b { font-family: 'Rajdhani', sans-serif; font-size: 22px; display: block; }
+.stat b.c { color: #00e5c8; }
+.stat b.g { color: #30e8a0; }
+.stat b.a { color: #f0a030; }
+.stat span { font-family: 'JetBrains Mono', monospace; font-size: 8px; color: #5a6a7a; letter-spacing: 1px; text-transform: uppercase; }
+.legend { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; justify-content: center; }
+.leg { display: flex; align-items: center; gap: 4px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #8094a8; }
+.leg .dot { width: 10px; height: 10px; border-radius: 2px; }
+</style>
+</head>
+<body>
+<h1>🎯 YOLO26n LIVE DETECTION VIDEO</h1>
+<div class="sub">Real AI detection on real video | 615 objects detected | 46 FPS CPU</div>
+
+<div class="video-wrap">
+  <video controls autoplay loop muted>
+    <source src="yolo26n_detected.mp4" type="video/mp4">
+    Your browser does not support video.
+  </video>
+</div>
+
+<div class="stats">
+  <div class="stat"><b class="c">615</b><span>Detections</span></div>
+  <div class="stat"><b class="g">46</b><span>FPS</span></div>
+  <div class="stat"><b class="a">5.3s</b><span>Processing</span></div>
+  <div class="stat"><b>171</b><span>Frames</span></div>
+  <div class="stat"><b class="c">7</b><span>Classes</span></div>
+</div>
+
+<div class="legend">
+  <div class="leg"><div class="dot" style="background:#00ff00"></div>person</div>
+  <div class="leg"><div class="dot" style="background:#ffa500"></div>car</div>
+  <div class="leg"><div class="dot" style="background:#ff6400"></div>truck</div>
+  <div class="leg"><div class="dot" style="background:#ffc800"></div>bus</div>
+  <div class="leg"><div class="dot" style="background:#00c8ff"></div>motorcycle</div>
+  <div class="leg"><div class="dot" style="background:#00ffff"></div>dog</div>
+  <div class="leg"><div class="dot" style="background:#b4b400"></div>bench</div>
+  <div class="leg"><div class="dot" style="background:#0096ff"></div>traffic light</div>
+</div>
+</body>
+</html>
