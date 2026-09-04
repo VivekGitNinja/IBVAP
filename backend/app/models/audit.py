@@ -1,7 +1,7 @@
 """Audit log model for tamper-evident operational records."""
 
 from datetime import datetime
-from sqlalchemy import String, DateTime, JSON, Text
+from sqlalchemy import String, DateTime, JSON, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from backend.app.models.base import Base
 
@@ -13,6 +13,10 @@ class AuditLog(Base):
     resource, timestamp, and change details.
     """
     __tablename__ = "audit_logs"
+    __table_args__ = (
+        Index("ix_audit_logs_actor_created", "actor", "created_at"),
+        Index("ix_audit_logs_target", "target_type", "target_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     actor: Mapped[str] = mapped_column(String(80), index=True)

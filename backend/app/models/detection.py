@@ -16,7 +16,9 @@ class Detection(Base):
     __tablename__ = "detections"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    camera_id: Mapped[int] = mapped_column(ForeignKey("cameras.id"), index=True)
+    camera_id: Mapped[Optional[int]] = mapped_column(ForeignKey("cameras.id"), nullable=True, index=True)
+    job_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    media_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     track_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
     label: Mapped[str] = mapped_column(String(60), default="unknown")
     confidence: Mapped[float] = mapped_column(Float, default=0.0)

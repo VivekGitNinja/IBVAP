@@ -155,3 +155,42 @@ export interface SyncStatus {
   failed: number;
   total: number;
 }
+
+export interface MediaAsset {
+  id: number;
+  filename: string;
+  original_filename: string;
+  file_path: string;
+  mime_type: string;
+  file_size: number;
+  sha256: string;
+  duration_seconds: number;
+  width: number;
+  height: number;
+  fps: number;
+  total_frames: number;
+  status: string;
+  uploaded_by: string;
+  created_at: string;
+}
+
+export interface AnalysisJob {
+  job_id: string;
+  source_type: string;
+  source_id?: number | null;
+  source_url?: string | null;
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+  progress_percent: number;
+  total_frames: number;
+  processed_frames: number;
+  detections_count: number;
+  incidents_count: number;
+  fps: number;
+  detector_model: string;
+  confidence_threshold: number;
+  error_message?: string | null;
+  summary?: Record<string, any>;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+}

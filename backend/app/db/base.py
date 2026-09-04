@@ -14,9 +14,14 @@ from backend.app.models.evidence import Evidence  # noqa: F401
 from backend.app.models.audit import AuditLog  # noqa: F401
 from backend.app.models.sync_queue import SyncQueue  # noqa: F401
 from backend.app.models.system_config import SystemConfig  # noqa: F401
+from backend.app.models.media_asset import MediaAsset  # noqa: F401
+from backend.app.models.analysis_job import AnalysisJob  # noqa: F401
+from backend.app.models.plate_read import PlateRead  # noqa: F401
+from backend.app.models.watchlist import Watchlist  # noqa: F401
 
 __all__ = [
     "Base", "User", "Camera", "CameraHealth", "Zone", "Detection", "Track",
     "Event", "Incident", "Alert", "Evidence", "AuditLog", "SyncQueue",
-    "SystemConfig",
+    "SystemConfig", "MediaAsset", "AnalysisJob", "PlateRead", "Watchlist",
 ]
+

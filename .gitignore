@@ -19,4 +19,6 @@ data/*.jsonl
 *.egg-info/
 dist/
 build/
+test-results/
+playwright-report/
 .DS_Store

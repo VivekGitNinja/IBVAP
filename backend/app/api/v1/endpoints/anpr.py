@@ -3,10 +3,14 @@
 from datetime import datetime, timedelta
 import random
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+import cv2
+import numpy as np
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from backend.app.db.session import get_db
+from backend.app.models.plate_read import PlateRead
+from backend.app.services.anpr import anpr_engine
 
 router = APIRouter()
 
@@ -138,44 +142,130 @@ SCANNED_PLATES = [
 BARRIER_STATE = {"status": "ARMED", "barrier_raised": False, "mode": "AUTO_INTERCEPT"}
 
 @router.get("/plates")
-def list_scanned_plates(status: Optional[str] = None, bop: Optional[str] = None, search: Optional[str] = None):
-    """List scanned vehicle license plates with OCR metadata."""
-    results = list(SCANNED_PLATES)
-    if status:
-        results = [p for p in results if p["status"].lower() == status.lower()]
-    if bop:
-        results = [p for p in results if bop.lower() in p["bop"].lower()]
+def list_scanned_plates(
+    status: Optional[str] = None,
+    bop: Optional[str] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """List scanned vehicle license plates with OCR metadata from real database."""
+    query = db.query(PlateRead).order_by(PlateRead.created_at.desc())
     if search:
-        s = search.lower()
-        results = [p for p in results if s in p["plate_number"].lower() or s in p.get("vehicle_model", "").lower()]
+        s = search.strip().upper()
+        query = query.filter(PlateRead.plate_text.ilike(f"%{s}%"))
+    records = query.limit(100).all()
+
+    results = []
+    for r in records:
+        is_flagged = any(w["plate_number"].upper() == r.plate_text.upper() for w in WATCHLIST_DB)
+        plate_status = "STOLEN_FLAGGED" if is_flagged else "CLEARED"
+        if status and plate_status.lower() != status.lower():
+            continue
+        results.append({
+            "id": r.id,
+            "plate_number": r.plate_text,
+            "vehicle_type": "Motor Vehicle",
+            "vehicle_model": "Identified via OCR",
+            "bop": f"Camera #{r.camera_id}" if r.camera_id else (f"Job #{r.job_id}" if r.job_id else "Checkpost 1"),
+            "confidence": r.confidence,
+            "status": plate_status,
+            "state_origin": r.plate_text[:2] if len(r.plate_text) >= 2 else "IND",
+            "speed_kmh": 35,
+            "lane": "Primary Checkpost",
+            "barrier_status": "INTERCEPT_ENGAGED" if is_flagged else "CLEARED",
+            "timestamp": r.created_at.isoformat(),
+            "crop_url": "/api/v1/cameras/1/snapshot",
+        })
     return results
 
+
+@router.post("/scan-file")
+async def scan_plate_file(
+    file: UploadFile = File(...),
+    bop: str = Form("BOP-01 Road Checkpost"),
+    db: Session = Depends(get_db),
+):
+    """Upload vehicle image and perform real-time ANPR localization and OCR."""
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(status_code=400, detail="Invalid image file")
+
+    candidates = anpr_engine.process_frame(img)
+    if not candidates:
+        return {
+            "recognized": False,
+            "plate_number": None,
+            "confidence": 0.0,
+            "status": "NO_PLATE_DETECTED",
+            "message": "No license plate localized or read in provided image",
+        }
+
+    best = candidates[0]
+    plate_clean = best["text"]
+    is_flagged = any(w["plate_number"].upper() == plate_clean.upper() for w in WATCHLIST_DB)
+    computed_status = "STOLEN_FLAGGED" if is_flagged else "CLEARED"
+
+    rec = PlateRead(
+        plate_text=plate_clean,
+        confidence=best["confidence"],
+        frame_index=0,
+        timestamp_ms=0.0,
+        bbox=best.get("bbox", {}),
+        method="tesseract",
+    )
+    db.add(rec)
+    db.commit()
+    db.refresh(rec)
+
+    return {
+        "id": rec.id,
+        "recognized": True,
+        "plate_number": plate_clean,
+        "confidence": best["confidence"],
+        "status": computed_status,
+        "state_origin": plate_clean[:2] if len(plate_clean) >= 2 else "IND",
+        "bop": bop,
+        "barrier_status": "INTERCEPT_ENGAGED" if is_flagged else "CLEARED",
+        "timestamp": rec.created_at.isoformat(),
+    }
+
+
 @router.post("/scan")
-def scan_plate(data: PlateIn):
-    """Record an ANPR scan and check against the stolen vehicle watchlist."""
+def scan_plate(data: PlateIn, db: Session = Depends(get_db)):
+    """Record an ANPR scan, persist in database, and check against stolen watchlist."""
     plate_clean = data.plate_number.strip().upper()
-    
-    # Check against watchlist
     is_flagged = any(w["plate_number"].upper() == plate_clean for w in WATCHLIST_DB)
     computed_status = "STOLEN_FLAGGED" if is_flagged else data.status
 
-    record = {
-        "id": len(SCANNED_PLATES) + 1,
+    rec = PlateRead(
+        plate_text=plate_clean,
+        confidence=data.confidence,
+        frame_index=0,
+        timestamp_ms=0.0,
+        bbox={},
+        method="manual_entry",
+    )
+    db.add(rec)
+    db.commit()
+    db.refresh(rec)
+
+    return {
+        "id": rec.id,
         "plate_number": plate_clean,
         "vehicle_type": data.vehicle_type,
-        "vehicle_model": "Standard Civilian Vehicle",
+        "vehicle_model": "Standard Vehicle",
         "bop": data.bop,
         "confidence": data.confidence,
         "status": computed_status,
         "state_origin": plate_clean[:2] if len(plate_clean) >= 2 else "IND",
-        "speed_kmh": random.randint(20, 65),
+        "speed_kmh": 35,
         "lane": "Inbound Gate 1",
         "barrier_status": "INTERCEPT_ENGAGED" if is_flagged else "CLEARED",
-        "timestamp": datetime.utcnow().isoformat(),
-        "crop_url": "/api/v1/cameras/4/snapshot",
+        "timestamp": rec.created_at.isoformat(),
+        "crop_url": "/api/v1/cameras/1/snapshot",
     }
-    SCANNED_PLATES.insert(0, record)
-    return record
 
 @router.get("/watchlist")
 def get_anpr_watchlist():

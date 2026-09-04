@@ -104,3 +104,64 @@ def test_to_dict():
     assert "label" in d
     assert "active" in d
     assert "trajectory" in d
+
+
+def test_occlusion_same_track_id_retained():
+    """OCCLUSION: Track ID persists through a brief disappearance (≤ max_disappeared frames).
+
+    Simulates an object going behind a pole for 5 frames, then reappearing
+    at the same position. The same track_id MUST be reused (not a new one).
+    """
+    tracker = CentroidTracker(max_disappeared=10)
+    # Frame 1: object appears at (100, 100)-(200, 200)
+    det = _make_detection(100, 100, 200, 200)
+    tracks = tracker.update([det], datetime(2024, 1, 1, 0, 0, 0))
+    original_track_id = tracks[0].track_id
+
+    # Frames 2-6: object disappears (behind pole) — 5 frames, under max_disappeared (10)
+    for i in range(1, 6):
+        active = tracker.update([], datetime(2024, 1, 1, 0, 0, i))
+
+    # The track should still be alive (occluded but not evicted)
+    active_ids = {t.track_id for t in active}
+    assert original_track_id in active_ids, (
+        f"Track {original_track_id} should survive {5} disappeared frames (max_disappeared=10)"
+    )
+
+    # Frame 7: object reappears at same position
+    det_reappear = _make_detection(100, 100, 200, 200)
+    tracks_after = tracker.update([det_reappear], datetime(2024, 1, 1, 0, 0, 6))
+
+    reappear_id = tracks_after[0].track_id
+    assert reappear_id == original_track_id, (
+        f"Expected same track_id={original_track_id} after reappearance, got {reappear_id}. "
+        f"The tracker must NOT create a new ID for a briefly occluded object."
+    )
+
+
+def test_far_reappearance_creates_new_track():
+    """OCCLUSION: Object disappearing then reappearing far away gets a NEW track ID.
+
+    Simulates: object exits frame, a completely different object appears far away.
+    The tracker must NOT recycle the old track_id — that would cause false associations.
+    """
+    tracker = CentroidTracker(max_disappeared=10)
+    # Frame 1: object at top-left
+    det = _make_detection(10, 10, 60, 60)
+    tracks = tracker.update([det], datetime(2024, 1, 1, 0, 0, 0))
+    original_id = tracks[0].track_id
+
+    # Frames 2-12: object disappears for 11 frames (> max_disappeared=10)
+    for i in range(1, 12):
+        tracker.update([], datetime(2024, 1, 1, 0, 0, i))
+
+    # Frame 13: completely different object appears far away (bottom-right)
+    det_new = _make_detection(800, 600, 900, 700)
+    tracks_new = tracker.update([det_new], datetime(2024, 1, 1, 0, 0, 12))
+
+    assert len(tracks_new) == 1
+    new_id = tracks_new[0].track_id
+    assert new_id != original_id, (
+        f"Expected NEW track_id after {11} disappeared frames (max_disappeared=10), "
+        f"but got recycled id={new_id}."
+    )

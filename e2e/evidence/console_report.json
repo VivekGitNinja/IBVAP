@@ -1,0 +1,171 @@
+{
+  "total_console_errors": 13,
+  "total_page_errors": 0,
+  "total_failed_requests": 2,
+  "external_requests_count": 138,
+  "external_hosts": [
+    "fonts.googleapis.com",
+    "fonts.gstatic.com",
+    "server.arcgisonline.com"
+  ],
+  "console_errors": [
+    {
+      "text": "WebSocket connection to 'ws://localhost:8001/ws/events' failed: Error during WebSocket handshake: Unexpected response code: 403",
+      "location": {
+        "url": "http://localhost:5173/src/hooks/useLiveFeed.ts",
+        "line": 26,
+        "column": 0,
+        "lineNumber": 26,
+        "columnNumber": 0
+      },
+      "timestamp": "2026-09-04T20:30:07.106Z"
+    },
+    {
+      "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "location": {
+        "url": "http://localhost:5173/api/v1/auth/token",
+        "line": 0,
+        "column": 0,
+        "lineNumber": 0,
+        "columnNumber": 0
+      },
+      "timestamp": "2026-09-04T20:30:07.391Z"
+    },
+    {
+      "text": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "location": {
+        "url": "http://localhost:5173/api/v1/watchlist/1/image",
+        "line": 0,
+        "column": 0,
+        "lineNumber": 0,
+        "columnNumber": 0
+      },
+      "timestamp": "2026-09-04T20:30:12.976Z"
+    },
+    {
+      "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+      "location": {
+        "url": "http://localhost:5173/api/v1/media/upload",
+        "line": 0,
+        "column": 0,
+        "lineNumber": 0,
+        "columnNumber": 0
+      },
+      "timestamp": "2026-09-04T20:30:20.163Z"
+    },
+    {
+      "text": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "location": {
+        "url": "http://localhost:5173/api/v1/watchlist/1/image",
+        "line": 0,
+        "column": 0,
+        "lineNumber": 0,
+        "columnNumber": 0
+      },
+      "timestamp": "2026-09-04T20:30:58.790Z"
+    },
+    {
+      "text": "The AudioContext encountered an error from the audio device or the WebAudio renderer.",
+      "location": {
+        "url": "http://localhost:5173/?view=media",
+        "line": 0,
+        "column": 0,
+        "lineNumber": 0,
+        "columnNumber": 0
+      },
+      "timestamp": "2026-09-04T20:31:07.182Z"
+    },
+    {
+      "text": "The AudioContext encountered an error from the audio device or the WebAudio renderer.",
+      "location": {
+        "url": "http://localhost:5173/?view=media",
+        "line": 0,
+        "column": 0,
+        "lineNumber": 0,
+        "columnNumber": 0
+      },
+      "timestamp": "2026-09-04T20:31:07.182Z"
+    },
+    {
+      "text": "The AudioContext encountered an error from the audio device or the WebAudio renderer.",
+      "location": {
+        "url": "http://localhost:5173/?view=media",
+        "line": 0,
+        "column": 0,
+        "lineNumber": 0,
+        "columnNumber": 0
+      },
+      "timestamp": "2026-09-04T20:31:08.569Z"
+    },
+    {
+      "text": "Failed to load resource: net::ERR_FAILED",
+      "location": {
+        "url": "http://localhost:5173/api/v1/status",
+        "line": 0,
+        "column": 0,
+        "lineNumber": 0,
+        "columnNumber": 0
+      },
+      "timestamp": "2026-09-04T20:32:06.611Z"
+    },
+    {
+      "text": "Failed to load resource: net::ERR_INTERNET_DISCONNECTED",
+      "location": {
+        "url": "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Rajdhani:wght@500;600;700;800&display=swap",
+        "line": 0,
+        "column": 0,
+        "lineNumber": 0,
+        "columnNumber": 0
+      },
+      "timestamp": "2026-09-04T20:32:08.821Z"
+    },
+    {
+      "text": "Failed to load resource: net::ERR_INTERNET_DISCONNECTED",
+      "location": {
+        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/13/3415/5852",
+        "line": 0,
+        "column": 0,
+        "lineNumber": 0,
+        "columnNumber": 0
+      },
+      "timestamp": "2026-09-04T20:32:08.982Z"
+    },
+    {
+      "text": "Failed to load resource: net::ERR_INTERNET_DISCONNECTED",
+      "location": {
+        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/13/3415/5853",
+        "line": 0,
+        "column": 0,
+        "lineNumber": 0,
+        "columnNumber": 0
+      },
+      "timestamp": "2026-09-04T20:32:08.982Z"
+    },
+    {
+      "text": "Failed to load resource: net::ERR_INTERNET_DISCONNECTED",
+      "location": {
+        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/13/3416/5852",
+        "line": 0,
+        "column": 0,
+        "lineNumber": 0,
+        "columnNumber": 0
+      },
+      "timestamp": "2026-09-04T20:32:08.982Z"
+    }
+  ],
+  "page_errors": [],
+  "failed_requests": [
+    {
+      "url": "http://localhost:5173/api/v1/watchlist/1/image",
+      "status": 404,
+      "method": "GET",
+      "timestamp": "2026-09-04T20:30:12.976Z"
+    },
+    {
+      "url": "http://localhost:5173/api/v1/watchlist/1/image",
+      "status": 404,
+      "method": "GET",
+      "timestamp": "2026-09-04T20:30:58.790Z"
+    }
+  ]
+}

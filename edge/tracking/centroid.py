@@ -49,6 +49,9 @@ class TrackedObject:
     zone_ids: list[int] = field(default_factory=list)
     current_zone_id: Optional[int] = None
     frame_count: int = 0
+    first_frame: int = 0
+    last_frame: int = 0
+    max_speed: float = 0.0
     last_bbox: dict = field(default_factory=dict)
     disappeared: int = 0
 
@@ -57,7 +60,7 @@ class TrackedObject:
         bbox = self.last_bbox
         if not bbox:
             return (0, 0)
-        return ((bbox["x1"] + bbox["x2"]) // 2, (bbox["y1"] + bbox["y3"]) // 2)
+        return ((bbox["x1"] + bbox["x2"]) // 2, (bbox["y1"] + bbox["y2"]) // 2)
 
     def to_dict(self) -> dict:
         return {
@@ -71,6 +74,9 @@ class TrackedObject:
             "dwell_time_seconds": round(self.dwell_time_seconds, 1),
             "total_distance": round(self.total_distance, 1),
             "speed_estimate": round(self.speed_estimate, 1),
+            "max_speed": round(self.max_speed, 1),
+            "first_frame": self.first_frame,
+            "last_frame": self.last_frame,
             "direction": self.direction,
             "zone_ids": self.zone_ids,
             "current_zone_id": self.current_zone_id,
@@ -131,11 +137,17 @@ class CentroidTracker:
         """Create a new track from a detection."""
         tid = f"T-{self._next_id:04d}"
         self._next_id += 1
+        det.track_id = tid
 
         cx, cy = det.center
+        fid = getattr(det, "frame_id", 0)
+        label_val = getattr(det, "class_name", "") or getattr(det, "label", "unknown")
+        if label_val == "unknown" and getattr(det, "label", ""):
+            label_val = det.label
+
         track = TrackedObject(
             track_id=tid,
-            label=det.label,
+            label=label_val,
             confidence_avg=det.confidence,
             first_seen=now,
             last_seen=now,
@@ -143,6 +155,8 @@ class CentroidTracker:
             last_bbox={"x1": det.bbox[0], "y1": det.bbox[1],
                        "x2": det.bbox[2], "y2": det.bbox[3]},
             frame_count=1,
+            first_frame=fid,
+            last_frame=fid,
         )
         self.tracks[tid] = track
 
@@ -185,6 +199,7 @@ class CentroidTracker:
                 continue
             tid = track_ids[ti]
             det = detections[di]
+            det.track_id = tid
             track = active_tracks[tid]
 
             # Update track
@@ -196,6 +211,7 @@ class CentroidTracker:
             track.total_distance += dist
             if dt_seconds > 0:
                 track.speed_estimate = dist / dt_seconds
+                track.max_speed = max(track.max_speed, track.speed_estimate)
 
             dx = cx - prev_center[0]
             dy = cy - prev_center[1]
@@ -207,6 +223,12 @@ class CentroidTracker:
                               "x2": det.bbox[2], "y2": det.bbox[3]}
             track.last_seen = now
             track.frame_count += 1
+            fid = getattr(det, "frame_id", 0)
+            if fid > 0:
+                track.last_frame = fid
+            else:
+                track.last_frame += 1
+
             track.disappeared = 0
             track.active = True
 
@@ -235,6 +257,23 @@ class CentroidTracker:
             if di not in matched_dets:
                 self._register_track(det, now)
 
+    def get_track_summaries(self) -> dict[str, dict]:
+        """Return high-level summary of all tracks observed."""
+        return {
+            tid: {
+                "track_id": t.track_id,
+                "class": t.label,
+                "first_frame": t.first_frame,
+                "last_frame": t.last_frame,
+                "max_speed": round(t.max_speed, 2),
+                "total_distance": round(t.total_distance, 2),
+                "frame_count": t.frame_count,
+                "dwell_time_seconds": round(t.dwell_time_seconds, 2),
+                "direction": t.direction,
+            }
+            for tid, t in self.tracks.items()
+        }
+
     def get_active_tracks(self) -> list[TrackedObject]:
         """Return currently active tracks."""
         return [t for t in self.tracks.values() if t.active]
@@ -257,3 +296,4 @@ class CentroidTracker:
     @property
     def total_count(self) -> int:
         return len(self.tracks)
+

@@ -14,9 +14,14 @@ from backend.app.models.evidence import Evidence
 from backend.app.models.audit import AuditLog
 from backend.app.models.sync_queue import SyncQueue
 from backend.app.models.system_config import SystemConfig
+from backend.app.models.media_asset import MediaAsset
+from backend.app.models.analysis_job import AnalysisJob
+from backend.app.models.plate_read import PlateRead
+from backend.app.models.watchlist import Watchlist
 
 __all__ = [
     "Base", "User", "Camera", "CameraHealth", "Zone", "Detection", "Track",
     "Event", "Incident", "Alert", "Evidence", "AuditLog", "SyncQueue",
-    "SystemConfig",
+    "SystemConfig", "MediaAsset", "AnalysisJob", "PlateRead", "Watchlist",
 ]
+

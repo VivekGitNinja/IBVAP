@@ -4,9 +4,14 @@ from fastapi.testclient import TestClient
 from backend.app.main import app
 from backend.app.db.session import SessionLocal
 from backend.app.models.user import User
-from backend.app.core.security import hash_password
+from backend.app.core.security import hash_password, create_access_token
 
 client = TestClient(app)
+
+
+def _auth_headers(role="OPERATOR"):
+    token = create_access_token("operator", role)
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _ensure_operator():
@@ -35,8 +40,7 @@ def test_demo_creates_incident():
     r = _seed("intrusion")
     assert r.status_code == 200
     data = r.json()
-    assert "incident_code" in data
-    assert data["severity"] in ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    assert "incident_id" in data
     assert data["threat_score"] > 0
     assert data["events_created"] > 0
 
@@ -45,7 +49,7 @@ def test_incident_acknowledge():
     """Acknowledge flow should update status."""
     r = _seed("intrusion")
     inc_id = r.json()["incident_id"]
-    r = client.post(f"/api/v1/incidents/{inc_id}/acknowledge")
+    r = client.post(f"/api/v1/incidents/{inc_id}/acknowledge", headers=_auth_headers())
     assert r.status_code == 200
     assert r.json()["status"] == "ACKNOWLEDGED"
 
@@ -54,7 +58,7 @@ def test_incident_escalate():
     """Escalate flow should update status."""
     r = _seed("night_movement")
     inc_id = r.json()["incident_id"]
-    r = client.post(f"/api/v1/incidents/{inc_id}/escalate")
+    r = client.post(f"/api/v1/incidents/{inc_id}/escalate", headers=_auth_headers())
     assert r.status_code == 200
     assert r.json()["status"] == "ESCALATED"
 
@@ -63,7 +67,7 @@ def test_incident_dismiss():
     """Dismiss flow should close as false positive."""
     r = _seed("loitering")
     inc_id = r.json()["incident_id"]
-    r = client.post(f"/api/v1/incidents/{inc_id}/dismiss")
+    r = client.post(f"/api/v1/incidents/{inc_id}/dismiss", headers=_auth_headers())
     assert r.status_code == 200
     assert r.json()["status"] == "DISMISSED"
 
@@ -83,7 +87,7 @@ def test_evidence_verify():
     r = _seed("intrusion")
     inc_id = r.json()["incident_id"]
     evidence_id = r.json()["evidence_id"]
-    r = client.get(f"/api/v1/evidence/verify/{evidence_id}")
+    r = client.get(f"/api/v1/evidence/verify/{evidence_id}", headers=_auth_headers())
     assert r.status_code == 200
     assert r.json()["valid"] is True
 

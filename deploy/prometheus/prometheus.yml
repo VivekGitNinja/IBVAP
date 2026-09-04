@@ -1,0 +1,27 @@
+# IBVAP Production Prometheus Configuration
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+  external_labels:
+    monitor: 'ibvap-border-telemetry'
+    environment: 'production'
+
+rule_files:
+  - 'alert_rules.yml'
+
+scrape_configs:
+  - job_name: 'ibvap-backend'
+    metrics_path: '/metrics'
+    scrape_interval: 5s
+    static_configs:
+      - targets:
+          - 'ibvap-backend:8000'
+          - 'host.docker.internal:8001'
+          - 'localhost:8001'
+        labels:
+          group: 'c4isr-core'
+          tier: 'edge-platform'
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

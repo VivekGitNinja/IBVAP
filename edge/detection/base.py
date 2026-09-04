@@ -16,6 +16,7 @@ class Detection:
     frame_id: int = 0
     center: list = None
     source: str = "fallback"
+    track_id: str | None = None
 
     def __post_init__(self):
         if self.center is None:

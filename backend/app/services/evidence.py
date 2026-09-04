@@ -124,6 +124,59 @@ def compute_file_hash(file_path: str) -> str | None:
         return None
 
 
+def transcode_and_seal_clip(input_path: str, output_path: str | None = None) -> tuple[str, str, bool]:
+    """Re-encode video clip to H.264 if ffmpeg is available, and compute final SHA-256 hash.
+    
+    Returns (final_path, sha256_hash, is_playable_in_browser).
+    """
+    import os
+    import shutil
+    import subprocess
+    import logging
+
+    logger = logging.getLogger(__name__)
+    ffmpeg_bin = shutil.which("ffmpeg")
+
+    if not output_path:
+        base, ext = os.path.splitext(input_path)
+        output_path = f"{base}_h264.mp4"
+
+    final_path = input_path
+    playable = False
+
+    if ffmpeg_bin and settings.ffmpeg_h264_transcode:
+        cmd = [
+            ffmpeg_bin,
+            "-y",
+            "-i", input_path,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            output_path,
+        ]
+        try:
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+            if res.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                final_path = output_path
+                playable = True
+                if input_path != output_path and os.path.exists(input_path):
+                    try:
+                        os.remove(input_path)
+                    except OSError:
+                        pass
+                logger.info(f"Re-encoded evidence clip to H.264 at {output_path}")
+            else:
+                logger.warning(f"FFmpeg transcode returned non-zero code {res.returncode}, keeping original clip")
+        except Exception as e:
+            logger.warning(f"FFmpeg transcode exception: {e}")
+    else:
+        logger.warning("FFmpeg binary missing from PATH; keeping original video container (playable=False)")
+
+    # Compute SHA-256 of the FINAL file on disk
+    final_sha256 = compute_file_hash(final_path) or ""
+    return final_path, final_sha256, playable
+
+
 def generate_section_65b_certificate(
     evidence_id: int,
     incident_code: str,
@@ -137,10 +190,11 @@ def generate_section_65b_certificate(
     (Section 63 of Bharatiya Sakshya Adhiniyam, 2023) for court admissibility of electronic surveillance records.
     """
     ts_now = datetime.now(timezone.utc).isoformat()
-    cert_id = f"SEC65B-{datetime.utcnow().strftime('%Y%m%d')}-{incident_code[-8:]}"
+    cert_id = f"BSA63-{datetime.utcnow().strftime('%Y%m%d')}-{incident_code[-8:]}"
 
     legal_declaration = (
-        f"I, {certifying_officer} ({officer_rank}), hereby certify that the electronic record bearing SHA-256 digest "
+        f"I, {certifying_officer} ({officer_rank}), hereby certify under Section 63 of the Bharatiya Sakshya Adhiniyam, 2023 "
+        f"(certificate for electronic records) that the electronic record bearing SHA-256 digest "
         f"{sha256_digest} associated with incident {incident_code} captured by surveillance node '{camera_name}' "
         f"at {bop_sector} was produced by the computer/edge surveillance system during the period over which the system was "
         f"used regularly to store or process information for border defense activities. Throughout the material part of the "
@@ -151,7 +205,9 @@ def generate_section_65b_certificate(
 
     cert_data = {
         "certificate_id": cert_id,
-        "legal_statute": "Section 65B(4) Indian Evidence Act, 1872 / Section 63 Bharatiya Sakshya Adhiniyam, 2023",
+        "legal_statute": "Bharatiya Sakshya Adhiniyam, 2023 — Section 63 (certificate for electronic records) [formerly Section 65B(4) Indian Evidence Act, 1872 (repealed)]",
+        "primary_statute": "Bharatiya Sakshya Adhiniyam, 2023 — Section 63",
+        "legacy_statute": "Section 65B(4) Indian Evidence Act, 1872 (repealed)",
         "incident_code": incident_code,
         "evidence_id": evidence_id,
         "sha256_digest": sha256_digest,
@@ -168,4 +224,8 @@ def generate_section_65b_certificate(
     }
 
     return cert_data
+
+
+# Alias for modern legal citation
+generate_bsa_section_63_certificate = generate_section_65b_certificate
 

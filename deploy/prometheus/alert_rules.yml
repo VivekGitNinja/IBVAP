@@ -1,0 +1,43 @@
+# IBVAP Prometheus Alerting Rules
+groups:
+  - name: ibvap_tactical_alerts
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 30s
+        labels:
+          severity: critical
+          tier: edge-platform
+        annotations:
+          summary: "IBVAP Backend Service Down"
+          description: "IBVAP tactical backend instance {{ $labels.instance }} has been unreachable for > 30 seconds."
+
+      - alert: HighHttpLatency
+        expr: rate(ibvap_http_request_duration_seconds_sum[1m]) / rate(ibvap_http_request_duration_seconds_count[1m]) > 0.5
+        for: 1m
+        labels:
+          severity: warning
+          tier: edge-platform
+        annotations:
+          summary: "High API Request Latency"
+          description: "Average HTTP response latency on {{ $labels.instance }} exceeded 500ms over the last minute."
+
+      - alert: HighHttp5xxErrorRate
+        expr: sum(rate(ibvap_http_requests_total{status=~"5.."}[1m])) / sum(rate(ibvap_http_requests_total[1m])) > 0.05
+        for: 1m
+        labels:
+          severity: critical
+          tier: edge-platform
+        annotations:
+          summary: "Elevated HTTP 5xx Error Rate"
+          description: "Over 5% of API requests on {{ $labels.instance }} are returning HTTP 5xx errors."
+
+      - alert: HighSystemCpuLoad
+        expr: ibvap_process_cpu_percent > 85
+        for: 2m
+        labels:
+          severity: warning
+          tier: host
+        annotations:
+          summary: "High CPU Utilization"
+          description: "IBVAP edge server CPU utilization is above 85%."

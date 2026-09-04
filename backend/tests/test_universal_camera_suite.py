@@ -68,3 +68,62 @@ def test_phone_stream_upload_and_test():
     ts = client.post("/api/v1/cameras/test-stream", json={"stream_url": "phone://mobile-test"})
     assert ts.status_code == 200
     assert ts.json()["success"] is True
+
+
+def test_camera_patch_and_map_endpoint():
+    """Verify PATCH /api/v1/cameras/{id} updates coordinates & GET /api/v1/map returns telemetry."""
+    from backend.app.core.security import create_access_token
+    from backend.app.db.session import SessionLocal
+    from backend.app.models.camera import Camera
+
+    token = create_access_token("test-officer", "ADMIN")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    db = SessionLocal()
+    try:
+        # Create test camera
+        cam = Camera(
+            name="Tactical-Outpost-Cam-99",
+            stream_url="demo://99",
+            latitude=28.7041,
+            longitude=77.1025,
+            sector="Sector Delta",
+            status="ONLINE",
+        )
+        db.add(cam)
+        db.commit()
+        db.refresh(cam)
+
+        # 1. Test PATCH updates coordinates and sector
+        patch_resp = client.patch(
+            f"/api/v1/cameras/{cam.id}",
+            json={"latitude": 28.7500, "longitude": 77.1500, "sector": "Sector Echo"},
+            headers=headers,
+        )
+        assert patch_resp.status_code == 200
+        pdata = patch_resp.json()
+        assert pdata["latitude"] == 28.7500
+        assert pdata["longitude"] == 77.1500
+        assert pdata["sector"] == "Sector Echo"
+
+        # 2. Test GET /api/v1/map retrieves camera & sector metrics
+        map_resp = client.get("/api/v1/map")
+        assert map_resp.status_code == 200
+        mdata = map_resp.json()
+        assert mdata["status"] == "ready"
+        assert "cameras" in mdata
+        assert "incidents" in mdata
+        assert "sectors" in mdata
+        assert "summary" in mdata
+
+        matched = next((c for c in mdata["cameras"] if c["id"] == cam.id), None)
+        assert matched is not None
+        assert matched["latitude"] == 28.7500
+        assert matched["sector"] == "Sector Echo"
+
+        # Clean up
+        db.delete(cam)
+        db.commit()
+    finally:
+        db.close()
+

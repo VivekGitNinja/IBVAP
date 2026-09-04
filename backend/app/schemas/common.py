@@ -6,7 +6,7 @@ Python 3.9 compatible — uses Optional[] from typing.
 from __future__ import annotations
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ORMModel(BaseModel):
@@ -41,6 +41,7 @@ class CameraIn(BaseModel):
     stream_url: str
     location: str = "Unknown"
     bop: str = "BOP-01"
+    sector: Optional[str] = "Sector Alpha"
     camera_type: str = "IP"
     fps: int = 10
     resolution: str = "1280x720"
@@ -49,6 +50,24 @@ class CameraIn(BaseModel):
     analytics_enabled: bool = True
     detection_interval: int = 3
     description: str = ""
+
+
+class CameraPatchIn(BaseModel):
+    name: Optional[str] = None
+    stream_url: Optional[str] = None
+    location: Optional[str] = None
+    bop: Optional[str] = None
+    sector: Optional[str] = None
+    camera_type: Optional[str] = None
+    fps: Optional[int] = None
+    resolution: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    analytics_enabled: Optional[bool] = None
+    detection_interval: Optional[int] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    active: Optional[bool] = None
 
 
 class CameraOut(CameraIn, ORMModel):
@@ -65,20 +84,153 @@ class CameraOut(CameraIn, ORMModel):
 # ── Zone ──────────────────────────────────────────────────────
 
 class ZoneIn(BaseModel):
-    camera_id: int
+    camera_id: Optional[int] = None
     name: str
     zone_type: str = "RESTRICTED"
-    polygon: List[List[float]] = []
+    geometry: Optional[Dict[str, Any]] = None
+    polygon: Optional[List[List[float]]] = None
+    direction: str = "either"
+    armed_schedule: Optional[Dict[str, Any]] = None
+    night_only: bool = False
+    min_confidence: float = 0.25
+    enabled: bool = True
     active: bool = True
     severity: float = 0.5
     dwell_threshold_seconds: int = 30
     color: str = ""
     description: str = ""
+    created_by: Optional[str] = "operator"
+
+    @field_validator("direction")
+    @classmethod
+    def validate_direction(cls, v: str) -> str:
+        if v not in ("either", "a_to_b", "b_to_a"):
+            raise ValueError("direction must be one of: either, a_to_b, b_to_a")
+        return v
+
+    @field_validator("min_confidence")
+    @classmethod
+    def validate_min_confidence(cls, v: float) -> float:
+        if not (0.0 <= v <= 1.0):
+            raise ValueError("min_confidence must be between 0.0 and 1.0")
+        return v
+
+    @model_validator(mode="after")
+    def validate_and_reconcile_geometry(self):
+        geom = self.geometry
+        poly = self.polygon
+
+        if geom is None and not poly:
+            raise ValueError("Either 'geometry' or 'polygon' must be provided")
+
+        if geom is not None:
+            g_type = geom.get("type")
+            if g_type not in ("line", "polygon"):
+                raise ValueError("geometry.type must be 'line' or 'polygon'")
+            pts = geom.get("points")
+            if not isinstance(pts, list):
+                raise ValueError("geometry.points must be a list of coordinates")
+            if g_type == "line" and len(pts) < 2:
+                raise ValueError("Line geometry requires at least 2 points")
+            if g_type == "polygon" and len(pts) < 3:
+                raise ValueError("Polygon geometry requires at least 3 points")
+            for pt in pts:
+                if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+                    raise ValueError("Each point must have at least 2 coordinates [x, y]")
+                x, y = float(pt[0]), float(pt[1])
+                if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+                    raise ValueError(f"Coordinates must be normalized within [0.0, 1.0], got ({x}, {y})")
+            if not poly:
+                self.polygon = pts
+        elif poly is not None:
+            if len(poly) < 3:
+                raise ValueError("Polygon requires at least 3 points")
+            for pt in poly:
+                if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+                    raise ValueError("Each point must have at least 2 coordinates [x, y]")
+                x, y = float(pt[0]), float(pt[1])
+                if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+                    raise ValueError(f"Coordinates must be normalized within [0.0, 1.0], got ({x}, {y})")
+            self.geometry = {"type": "polygon", "points": poly}
+
+        self.enabled = self.active if self.enabled is None else self.enabled
+        self.active = self.enabled
+        return self
 
 
-class ZoneOut(ZoneIn, ORMModel):
+class ZonePatchIn(BaseModel):
+    camera_id: Optional[int] = None
+    name: Optional[str] = None
+    zone_type: Optional[str] = None
+    geometry: Optional[Dict[str, Any]] = None
+    polygon: Optional[List[List[float]]] = None
+    direction: Optional[str] = None
+    armed_schedule: Optional[Dict[str, Any]] = None
+    night_only: Optional[bool] = None
+    min_confidence: Optional[float] = None
+    enabled: Optional[bool] = None
+    active: Optional[bool] = None
+    severity: Optional[float] = None
+    dwell_threshold_seconds: Optional[int] = None
+    color: Optional[str] = None
+    description: Optional[str] = None
+
+    @field_validator("direction")
+    @classmethod
+    def validate_direction(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("either", "a_to_b", "b_to_a"):
+            raise ValueError("direction must be one of: either, a_to_b, b_to_a")
+        return v
+
+    @field_validator("min_confidence")
+    @classmethod
+    def validate_min_confidence(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and not (0.0 <= v <= 1.0):
+            raise ValueError("min_confidence must be between 0.0 and 1.0")
+        return v
+
+    @model_validator(mode="after")
+    def validate_geometry(self):
+        if self.geometry is not None:
+            g_type = self.geometry.get("type")
+            if g_type not in ("line", "polygon"):
+                raise ValueError("geometry.type must be 'line' or 'polygon'")
+            pts = self.geometry.get("points")
+            if not isinstance(pts, list):
+                raise ValueError("geometry.points must be a list")
+            if g_type == "line" and len(pts) < 2:
+                raise ValueError("Line geometry requires at least 2 points")
+            if g_type == "polygon" and len(pts) < 3:
+                raise ValueError("Polygon geometry requires at least 3 points")
+            for pt in pts:
+                if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+                    raise ValueError("Each point must have at least 2 coordinates [x, y]")
+                x, y = float(pt[0]), float(pt[1])
+                if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+                    raise ValueError(f"Coordinates must be normalized within [0.0, 1.0], got ({x}, {y})")
+        return self
+
+
+class ZoneOut(ORMModel):
     id: int
+    camera_id: Optional[int] = None
+    name: str
+    zone_type: str = "RESTRICTED"
+    geometry: Dict[str, Any] = Field(default_factory=dict)
+    polygon: List[List[float]] = Field(default_factory=list)
+    direction: str = "either"
+    armed_schedule: Optional[Dict[str, Any]] = None
+    night_only: bool = False
+    min_confidence: float = 0.25
+    enabled: bool = True
+    active: bool = True
+    severity: float = 0.5
+    dwell_threshold_seconds: int = 30
+    color: str = ""
+    description: str = ""
+    created_by: Optional[str] = "system"
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 # ── Detection ─────────────────────────────────────────────────

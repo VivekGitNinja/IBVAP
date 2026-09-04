@@ -3,7 +3,7 @@
 from __future__ import annotations
 from typing import Optional
 from datetime import datetime
-from sqlalchemy import String, DateTime, Float, Integer, Boolean, Text
+from sqlalchemy import String, DateTime, Float, Integer, Boolean, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from backend.app.models.base import Base
 
@@ -14,6 +14,10 @@ class Camera(Base):
     Supports RTSP, ONVIF, uploaded video, webcam, and demo sources.
     """
     __tablename__ = "cameras"
+    __table_args__ = (
+        Index("ix_cameras_bop_status", "bop", "status"),
+        Index("ix_cameras_status", "status"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120), index=True)
@@ -28,6 +32,7 @@ class Camera(Base):
     last_heartbeat: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     latitude: Mapped[float] = mapped_column(Float, default=0.0)
     longitude: Mapped[float] = mapped_column(Float, default=0.0)
+    sector: Mapped[Optional[str]] = mapped_column(String(100), default="Sector Alpha", nullable=True)
     analytics_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     detection_interval: Mapped[int] = mapped_column(Integer, default=3,
         comment="Process every Nth frame")

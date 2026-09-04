@@ -8,18 +8,32 @@ function getApiBase(): string {
   return '/api/v1';
 }
 
+import { telemetry } from './utils/telemetry';
+
 const BASE = getApiBase();
 
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   const token = localStorage.getItem('ibvap_token');
+  const traceId = telemetry.generateTraceId();
   const headers: Record<string, string> = { ...(opts?.headers as Record<string, string> || {}) };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(BASE + path, { ...opts, headers });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`API ${res.status}: ${err}`);
+  headers['X-Trace-ID'] = traceId;
+
+  const start = performance.now();
+  try {
+    const res = await fetch(BASE + path, { ...opts, headers });
+    const durationMs = Math.round(performance.now() - start);
+    telemetry.recordNetworkCall(path, durationMs, res.status, traceId);
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`API ${res.status}: ${err}`);
+    }
+    return res.json();
+  } catch (err: any) {
+    const durationMs = Math.round(performance.now() - start);
+    telemetry.recordNetworkCall(path, durationMs, 0, traceId);
+    throw err;
   }
-  return res.json();
 }
 
 function post<T>(path: string, body?: any): Promise<T> {
@@ -68,6 +82,9 @@ export const api = {
   uploadPhoneFrame: (camId: string, imageB64: string) => post<any>(`/cameras/phone-stream/${camId}/frame`, { image: imageB64 }),
   startAllPipelines: () => post<any>('/cameras/pipeline/start-all'),
   powerOffAllHardware: () => post<any>('/cameras/hardware/power-off-all'),
+  ptzCommand: (id: number, direction: string, speed: number = 0.5) => post<any>(`/cameras/${id}/ptz`, { direction, speed }),
+  ptzPresets: (id: number) => get<any>(`/cameras/${id}/ptz/presets`),
+  ptzGoto: (id: number, preset: string) => post<any>(`/cameras/${id}/ptz/goto`, { preset }),
 
   // Zones
   zones: (cameraId?: number) => get<any[]>(cameraId ? `/zones?camera_id=${cameraId}` : '/zones'),
@@ -126,6 +143,24 @@ export const api = {
     return get<any[]>(q);
   },
   anprScan: (d: any) => post<any>('/anpr/scan', d),
+  anprScanFile: async (file: File, bop: string = 'BOP-01 Road Checkpost') => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('bop', bop);
+    const token = localStorage.getItem('ibvap_token');
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch(`${BASE}/anpr/scan-file`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`ANPR Scan Error (${res.status}): ${err}`);
+    }
+    return res.json();
+  },
   anprWatchlist: () => get<any[]>('/anpr/watchlist'),
   addAnprWatchlist: (d: any) => post<any>('/anpr/watchlist', d),
   toggleBarrier: () => post<any>('/anpr/barrier/toggle'),
@@ -135,8 +170,45 @@ export const api = {
   frsWatchlist: (threatLevel?: string) => get<any[]>(threatLevel ? `/frs/watchlist?threat_level=${threatLevel}` : '/frs/watchlist'),
   enrollSuspect: (d: any) => post<any>('/frs/watchlist', d),
   frsMatches: () => get<any[]>('/frs/matches'),
+  frsVerifyProbe: async (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const token = localStorage.getItem('ibvap_token');
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch(`${BASE}/frs/verify-probe`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`FRS Probe Error (${res.status}): ${err}`);
+    }
+    return res.json();
+  },
   verifyFaceMatch: (matchId: number, confirm: boolean) => post<any>(`/frs/matches/${matchId}/verify?confirm=${confirm}`),
   frsStats: () => get<any>('/frs/stats'),
+
+  // Sample Video Fixtures (Air-Gap Verification)
+  listSamples: () => get<any[]>('/media/samples/list'),
+  importSample: async (filename: string) => {
+    const formData = new FormData();
+    formData.append('filename', filename);
+    const token = localStorage.getItem('ibvap_token');
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch(`${BASE}/media/samples/import`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Import Sample Error (${res.status}): ${err}`);
+    }
+    return res.json();
+  },
 
   // QRT Tactical Dispatch Center
   qrtTeams: () => get<any[]>('/qrt/teams'),
@@ -144,4 +216,100 @@ export const api = {
   updateQrtStatus: (d: any) => post<any>('/qrt/status', d),
   qrtLogs: () => get<any[]>('/qrt/logs'),
   broadcastRadio: (d: any) => post<any>('/qrt/radio/broadcast', d),
+
+  // Real Camera Hardware Verification
+  testCamera: (id: number) => post<any>(`/cameras/${id}/test`),
+
+  // Real Video Upload & Media Assets
+  uploadMedia: async (file: File) => {
+    const token = localStorage.getItem('ibvap_token');
+    const formData = new FormData();
+    formData.append('file', file);
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    headers['X-Trace-ID'] = telemetry.generateTraceId();
+
+    const res = await fetch(`${BASE}/media/upload`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Upload Failed (${res.status}): ${err}`);
+    }
+    return res.json();
+  },
+  mediaAssets: () => get<any[]>('/media'),
+  mediaAsset: (id: number) => get<any>(`/media/${id}`),
+  deleteMedia: (id: number) => request<any>(`/media/${id}`, { method: 'DELETE' }),
+
+  createAnalysisJob: (d: {
+    source_type: string;
+    source_id?: number;
+    source_url?: string;
+    detector_model?: string;
+    confidence_threshold?: number;
+    zone_ids?: number[];
+    enable_anpr?: boolean;
+    enable_tracking?: boolean;
+    enable_behavior?: boolean;
+    enable_night_mode?: boolean;
+    enable_face?: boolean;
+  }) => post<any>('/analysis/jobs', d),
+  analysisJobs: () => get<any[]>('/analysis/jobs'),
+  analysisJob: (id: number | string) => get<any>(`/analysis/jobs/${id}`),
+  analysisResults: (id: number | string) => get<any>(`/analysis/jobs/${id}/results`),
+  analysisJobTracks: (id: number | string) => get<any>(`/analysis/jobs/${id}/tracks`),
+  cancelAnalysisJob: (id: number | string) => post<any>(`/analysis/jobs/${id}/cancel`),
+  analysisJobReportUrl: (id: number | string, format: 'json' | 'pdf' = 'json') => `${BASE}/analysis/jobs/${id}/report?format=${format}`,
+
+  // System Readiness (Task 4.2 & 5.4)
+  systemReadiness: () => get<any>('/system/readiness'),
+
+  // Real ANPR Plate Reads (Task 2.1 & 5.2)
+  searchPlates: (q?: string, jobId?: number) => {
+    let path = '/plates?';
+    if (q) path += `q=${encodeURIComponent(q)}&`;
+    if (jobId) path += `job_id=${jobId}&`;
+    return get<any[]>(path);
+  },
+
+  // Face Watchlist & Intelligence (Task 3.2 & 5.3)
+  watchlist: () => get<any[]>('/watchlist'),
+  enrollWatchlist: async (name: string, notes: string, file: File) => {
+    const token = localStorage.getItem('ibvap_token');
+    const formData = new FormData();
+    formData.append('name', name);
+    formData.append('notes', notes);
+    formData.append('file', file);
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    headers['X-Trace-ID'] = telemetry.generateTraceId();
+
+    const res = await fetch(`${BASE}/watchlist/enroll`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Enrollment Failed (${res.status}): ${err}`);
+    }
+    return res.json();
+  },
+  deleteWatchlist: (id: number) => request<any>(`/watchlist/${id}`, { method: 'DELETE' }),
+  watchlistMatches: () => get<any[]>('/watchlist/matches/recent'),
+
+  // Evidence Verification (Task 4.1)
+  verifyEvidenceHash: (id: number) => get<any>(`/evidence/${id}/verify`),
+
+  // Map Situational Awareness (Phase D)
+  getMapData: () => get<any>('/map'),
+  patchCamera: (id: number, data: any) => request<any>(`/cameras/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  }),
 };
+

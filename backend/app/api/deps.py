@@ -8,6 +8,7 @@ Provides:
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from backend.app.core.config import settings
 from backend.app.core.security import decode_access_token, role_has_permission
 
 
@@ -19,10 +20,16 @@ def current_user(
 ) -> dict:
     """Extract current user from JWT token.
 
-    Falls back to demo operator when no token is provided.
+    Enforces JWT authentication. Rejects unauthenticated requests with HTTP 401.
     """
     if not creds:
-        return {"sub": "demo-operator", "role": "OPERATOR"}
+        if not settings.require_auth and settings.environment == "development":
+            return {"sub": "demo-operator", "role": "OPERATOR"}
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication credentials were not provided",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     try:
         payload = decode_access_token(creds.credentials)
         return payload
@@ -30,6 +37,7 @@ def current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
 

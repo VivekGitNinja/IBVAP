@@ -76,3 +76,63 @@ def direction_label(dx: float, dy: float) -> str:
     if abs(dx) < abs(dy):
         return "SOUTH" if dy > 0 else "NORTH"
     return "EAST" if dx > 0 else "WEST"
+
+
+def ccw(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> bool:
+    """Returns True if points a, b, c are in counter-clockwise order."""
+    return (c[1] - a[1]) * (b[0] - a[0]) > (b[1] - a[1]) * (c[0] - a[0])
+
+
+def segments_intersect(p1: tuple[float, float], p2: tuple[float, float],
+                       p3: tuple[float, float], p4: tuple[float, float]) -> bool:
+    """Check if line segment p1-p2 intersects segment p3-p4."""
+    if (max(p1[0], p2[0]) < min(p3[0], p4[0]) or
+        min(p1[0], p2[0]) > max(p3[0], p4[0]) or
+        max(p1[1], p2[1]) < min(p3[1], p4[1]) or
+        min(p1[1], p2[1]) > max(p3[1], p4[1])):
+        return False
+
+    return (ccw(p1, p3, p4) != ccw(p2, p3, p4)) and (ccw(p1, p2, p3) != ccw(p1, p2, p4))
+
+
+def point_side_of_line(point: tuple[float, float], line_a: tuple[float, float], line_b: tuple[float, float]) -> float:
+    """Signed cross product indicating which side of directed line a->b the point lies on.
+    > 0: left side (side A)
+    < 0: right side (side B)
+    """
+    ax, ay = line_a
+    bx, by = line_b
+    px, py = point
+    return (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+
+
+def check_line_crossing(
+    p_prev: tuple[float, float],
+    p_curr: tuple[float, float],
+    line_a: tuple[float, float],
+    line_b: tuple[float, float],
+    direction_rule: str = "either"
+) -> tuple[bool, str]:
+    """Check if movement from p_prev to p_curr crosses line segment line_a->line_b.
+    Returns (crossed: bool, direction: 'a_to_b' | 'b_to_a' | 'none')
+    """
+    if not segments_intersect(p_prev, p_curr, line_a, line_b):
+        return False, "none"
+
+    side_prev = point_side_of_line(p_prev, line_a, line_b)
+    side_curr = point_side_of_line(p_curr, line_a, line_b)
+
+    if side_prev > 0 and side_curr <= 0:
+        dir_detected = "a_to_b"
+    elif side_prev < 0 and side_curr >= 0:
+        dir_detected = "b_to_a"
+    else:
+        dir_detected = "a_to_b" if side_prev >= 0 else "b_to_a"
+
+    if direction_rule == "either":
+        return True, dir_detected
+    elif direction_rule == dir_detected:
+        return True, dir_detected
+    else:
+        return False, dir_detected
+

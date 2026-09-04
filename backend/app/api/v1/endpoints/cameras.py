@@ -18,10 +18,11 @@ from fastapi import APIRouter, Depends, HTTPException, Body, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from backend.app.core.config import settings
 from backend.app.db.session import get_db
 from backend.app.models.camera import Camera
 from backend.app.models.camera_health import CameraHealth
-from backend.app.schemas.common import CameraIn, CameraOut, CameraHealthOut
+from backend.app.schemas.common import CameraIn, CameraOut, CameraHealthOut, CameraPatchIn
 from backend.app.services.audit import log_action
 from backend.app.api.deps import current_user
 
@@ -692,6 +693,25 @@ def update_camera(camera_id: int, data: CameraIn, db: Session = Depends(get_db),
     return c
 
 
+@router.patch("/{camera_id}", response_model=CameraOut)
+def patch_camera(camera_id: int, data: CameraPatchIn, db: Session = Depends(get_db),
+                 user: dict = Depends(current_user)):
+    """Partially update a camera (e.g. coordinates, sector, name)."""
+    c = db.get(Camera, camera_id)
+    if not c:
+        raise HTTPException(404, "Camera not found")
+    update_data = data.model_dump(exclude_unset=True)
+    old = {k: getattr(c, k) for k in update_data.keys()}
+    for k, v in update_data.items():
+        setattr(c, k, v)
+    c.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(c)
+    log_action(db, user["sub"], user.get("role", ""), "PATCH", "camera",
+               str(c.id), {"old": old, "updated_fields": list(update_data.keys())})
+    return c
+
+
 @router.post("/{camera_id}/disconnect")
 def disconnect_camera(camera_id: int, db: Session = Depends(get_db),
                       user: dict = Depends(current_user)):
@@ -777,6 +797,134 @@ def camera_health_history(camera_id: int, limit: int = 20,
 _active_streams: dict = {}
 
 
+class PTZCommand(BaseModel):
+    direction: str  # up, down, left, right, zoom_in, zoom_out, home, stop
+    speed: float = 0.5
+
+
+class PTZPresetCommand(BaseModel):
+    preset: str
+
+
+_PTZ_STATE: dict[int, dict] = {}
+_PTZ_PRESETS = [
+    {"id": "HOME", "name": "Sector Gate Alpha (Home)", "pan": 0.0, "tilt": 0.0, "zoom": 1.0},
+    {"id": "WATCHTOWER", "name": "Perimeter Watchtower North", "pan": 45.0, "tilt": 10.0, "zoom": 2.2},
+    {"id": "TRENCH", "name": "Anti-Infiltration Trench", "pan": -30.0, "tilt": -12.0, "zoom": 1.8},
+    {"id": "ROAD_JUNCTION", "name": "Supply Road Intersect", "pan": 75.0, "tilt": 5.0, "zoom": 3.0},
+]
+
+
+def _generate_offline_frame(camera: Camera) -> "np.ndarray":
+    """Generate an honest offline placeholder frame with diagnostic status — no fake footage."""
+    import cv2
+    import numpy as np
+
+    h, w = 720, 1280
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+    frame[:] = (12, 16, 20)  # Dark tactical slate
+
+    # Red danger border indicating offline status
+    cv2.rectangle(frame, (12, 12), (w - 12, h - 12), (40, 40, 220), 2)
+
+    # Diagnostic Header
+    cv2.putText(frame, "[CAMERA OFFLINE // NO VIDEO SIGNAL]", (w // 2 - 280, h // 2 - 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.95, (50, 50, 255), 2)
+
+    cv2.putText(frame, f"Node: {camera.name} (ID: {camera.id}) | Sector: {camera.bop}",
+                (w // 2 - 240, h // 2 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (220, 220, 220), 1)
+
+    stream_info = camera.stream_url if camera.stream_url else "None configured"
+    cv2.putText(frame, f"Stream Source: {stream_info}",
+                (w // 2 - 240, h // 2 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (160, 160, 160), 1)
+
+    cv2.putText(frame, "Connect physical RTSP, USB, or upload a video file to run live AI analysis.",
+                (w // 2 - 290, h // 2 + 70), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 255), 1)
+
+    return frame
+
+
+@router.post("/{camera_id}/test")
+def test_camera_connection(camera_id: int, db: Session = Depends(get_db)):
+    """Test whether a real camera/RTSP URL or device index can be opened."""
+    c = db.get(Camera, camera_id)
+    if not c:
+        raise HTTPException(404, "Camera not found")
+
+    url = c.stream_url or ""
+    if not url:
+        return {
+            "success": False,
+            "status": "OFFLINE",
+            "error": "No stream URL configured",
+            "camera_id": camera_id,
+        }
+
+    try:
+        if url.startswith("usb://"):
+            dev_idx = int(url.replace("usb://", "") or "0")
+            cap = cv2.VideoCapture(dev_idx)
+        elif url.startswith("file://"):
+            fpath = url.replace("file://", "")
+            if not os.path.exists(fpath):
+                return {"success": False, "status": "OFFLINE", "error": f"File not found: {fpath}", "camera_id": camera_id}
+            cap = cv2.VideoCapture(fpath)
+        elif url.startswith("demo://"):
+            if not settings.enable_demo:
+                return {
+                    "success": False,
+                    "status": "OFFLINE",
+                    "error": "Demo mode is disabled in system configuration",
+                    "camera_id": camera_id,
+                }
+            return {"success": True, "status": "ONLINE", "message": "Demo stream accessible", "resolution": "1280x720", "fps": 15, "camera_id": camera_id}
+        else:
+            # RTSP or network stream
+            cap = cv2.VideoCapture(url)
+
+        if not cap.isOpened():
+            return {
+                "success": False,
+                "status": "OFFLINE",
+                "error": f"Failed to connect to RTSP/video source: {url}",
+                "camera_id": camera_id,
+            }
+
+        ret, frame = cap.read()
+        cap.release()
+
+        if not ret or frame is None:
+            return {
+                "success": False,
+                "status": "DEGRADED",
+                "error": "Connected to stream source, but failed to retrieve video frame",
+                "camera_id": camera_id,
+            }
+
+        h, w, _ = frame.shape
+        c.status = "ONLINE"
+        c.health_score = 98.0
+        db.commit()
+
+        return {
+            "success": True,
+            "status": "ONLINE",
+            "width": w,
+            "height": h,
+            "resolution": f"{w}x{h}",
+            "fps": c.fps or 15,
+            "message": f"Successfully verified stream ({w}x{h})",
+            "camera_id": camera_id,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "status": "OFFLINE",
+            "error": str(e),
+            "camera_id": camera_id,
+        }
+
+
 def _generate_tactical_frame(camera: Camera, frame_num: int = 0) -> "np.ndarray":
     """Generate a realistic border outpost tactical surveillance frame (EO/IR style)."""
     import cv2
@@ -785,8 +933,15 @@ def _generate_tactical_frame(camera: Camera, frame_num: int = 0) -> "np.ndarray"
     h, w = 720, 1280
     frame = np.zeros((h, w, 3), dtype=np.uint8)
 
-    # Night thermal terrain gradient
-    horizon = int(h * 0.45)
+    # Apply PTZ Virtual Camera Offsets
+    ptz = _PTZ_STATE.get(camera.id, {"pan": 0.0, "tilt": 0.0, "zoom": 1.0, "preset": "HOME"})
+    pan_shift = int(ptz.get("pan", 0.0) * 4)
+    tilt_shift = int(ptz.get("tilt", 0.0) * 2)
+    zoom_val = max(1.0, min(4.0, ptz.get("zoom", 1.0)))
+
+    # Night thermal terrain gradient shifted by tilt
+    horizon = int(h * 0.45) + tilt_shift
+    horizon = max(120, min(h - 120, horizon))
     frame[:horizon, :] = (20, 24, 30)  # Night sky
     frame[horizon:, :] = (32, 38, 42)  # Ground / terrain
 
@@ -801,34 +956,37 @@ def _generate_tactical_frame(camera: Camera, frame_num: int = 0) -> "np.ndarray"
     for fx in range(50, w, 80):
         cv2.line(frame, (fx, fence_y - 25), (fx, fence_y + 40), (50, 65, 60), 2)
 
-    # Simulated target movement
+    # Simulated target movement shifted by pan
     t = (frame_num % 300) / 300.0
-    px = int(250 + 600 * np.sin(t * np.pi))
+    base_px = int(250 + 600 * np.sin(t * np.pi))
+    px = base_px - pan_shift
     py = int(horizon + 30 + 20 * np.cos(t * np.pi * 2))
-    pw, ph = 42, 98
+    pw, ph = int(42 * zoom_val), int(98 * zoom_val)
 
-    # Target silhouette
-    cv2.rectangle(frame, (px, py), (px + pw, py + ph), (90, 110, 100), -1)
-    cv2.circle(frame, (px + pw // 2, py - 10), 12, (90, 110, 100), -1)
+    # Only draw target if within viewport
+    if -pw < px < w + 50:
+        # Target silhouette
+        cv2.rectangle(frame, (px, py), (px + pw, py + ph), (90, 110, 100), -1)
+        cv2.circle(frame, (px + pw // 2, py - 10), int(12 * zoom_val), (90, 110, 100), -1)
 
-    # Bounding box & AI detection overlay
-    bbox_color = (0, 255, 0)
-    cv2.rectangle(frame, (px - 6, py - 26), (px + pw + 6, py + ph + 6), bbox_color, 2)
+        # Bounding box & AI detection overlay
+        bbox_color = (0, 255, 0)
+        cv2.rectangle(frame, (px - 6, py - 26), (px + pw + 6, py + ph + 6), bbox_color, 2)
 
-    label = "person 94.2%"
-    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-    cv2.rectangle(frame, (px - 6, py - 26 - th - 6), (px - 6 + tw + 6, py - 26), bbox_color, -1)
-    cv2.putText(frame, label, (px - 3, py - 28), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
+        label = f"person {94.2:.1f}% [Z:{zoom_val:.1f}x]"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+        cv2.rectangle(frame, (px - 6, py - 26 - th - 6), (px - 6 + tw + 6, py - 26), bbox_color, -1)
+        cv2.putText(frame, label, (px - 3, py - 28), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
 
-    # Virtual Zone Polygon Overlay
+    # Virtual Zone Polygon Overlay shifted by pan/tilt
     zone_pts = np.array([
-        [150, horizon + 20],
-        [w - 150, horizon + 20],
-        [w - 50, h - 80],
-        [50, h - 80]
+        [150 - pan_shift, horizon + 20],
+        [w - 150 - pan_shift, horizon + 20],
+        [w - 50 - pan_shift, h - 80],
+        [50 - pan_shift, h - 80]
     ], np.int32)
     cv2.polylines(frame, [zone_pts], True, (0, 165, 255), 1, cv2.LINE_AA)
-    cv2.putText(frame, "ZONE: RESTRICTED PERIMETER", (160, horizon + 40),
+    cv2.putText(frame, "ZONE: RESTRICTED PERIMETER", (160 - pan_shift, horizon + 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 165, 255), 1, cv2.LINE_AA)
 
     # Tactical HUD Crosshairs
@@ -847,11 +1005,99 @@ def _generate_tactical_frame(camera: Camera, frame_num: int = 0) -> "np.ndarray"
     cv2.putText(frame, f"GPS: {camera.latitude or 28.6139:.4f} N, {camera.longitude or 77.2090:.4f} E  |  {now_str}",
                 (20, 56), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 200, 210), 1, cv2.LINE_AA)
 
-    # Footer HUD
-    cv2.putText(frame, f"FEED: LIVE EO/IR  |  AI: YOLO26n (EDGE)  |  STATUS: {camera.status}  |  FPS: {camera.fps or 15}",
-                (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 1, cv2.LINE_AA)
+    # Footer HUD with live PTZ telemetry
+    ptz_info = f"PTZ: P:{ptz.get('pan', 0.0):+.1f}° T:{ptz.get('tilt', 0.0):+.1f}° Z:{zoom_val:.1f}x [{ptz.get('preset', 'HOME')}]"
+    cv2.putText(frame, f"FEED: LIVE EO/IR  |  AI: YOLO26n  |  STATUS: {camera.status}  |  FPS: {camera.fps or 15}  |  {ptz_info}",
+                (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 220, 255), 1, cv2.LINE_AA)
 
     return frame
+
+
+@router.post("/{camera_id}/ptz")
+def execute_ptz(camera_id: int, cmd: PTZCommand, db: Session = Depends(get_db)):
+    """Execute an ONVIF Pan-Tilt-Zoom command on a camera."""
+    c = db.get(Camera, camera_id)
+    if not c:
+        raise HTTPException(404, "Camera not found")
+
+    state = _PTZ_STATE.setdefault(camera_id, {"pan": 0.0, "tilt": 0.0, "zoom": 1.0, "preset": "HOME"})
+    step = max(2.0, min(25.0, cmd.speed * 20.0))
+
+    d = cmd.direction.lower().strip()
+    if d == "left":
+        state["pan"] = max(-100.0, state["pan"] - step)
+        state["preset"] = "MANUAL"
+    elif d == "right":
+        state["pan"] = min(100.0, state["pan"] + step)
+        state["preset"] = "MANUAL"
+    elif d == "up":
+        state["tilt"] = min(45.0, state["tilt"] + step)
+        state["preset"] = "MANUAL"
+    elif d == "down":
+        state["tilt"] = max(-45.0, state["tilt"] - step)
+        state["preset"] = "MANUAL"
+    elif d == "zoom_in":
+        state["zoom"] = min(4.0, state["zoom"] + 0.25 * cmd.speed)
+        state["preset"] = "MANUAL"
+    elif d == "zoom_out":
+        state["zoom"] = max(1.0, state["zoom"] - 0.25 * cmd.speed)
+        state["preset"] = "MANUAL"
+    elif d in ("home", "reset"):
+        state["pan"] = 0.0
+        state["tilt"] = 0.0
+        state["zoom"] = 1.0
+        state["preset"] = "HOME"
+
+    return {
+        "status": "success",
+        "camera_id": camera_id,
+        "command": d,
+        "ptz_state": state
+    }
+
+
+@router.get("/{camera_id}/ptz/presets")
+def get_ptz_presets(camera_id: int, db: Session = Depends(get_db)):
+    """Get tactical PTZ preset positions for a camera."""
+    c = db.get(Camera, camera_id)
+    if not c:
+        raise HTTPException(404, "Camera not found")
+    current = _PTZ_STATE.get(camera_id, {"pan": 0.0, "tilt": 0.0, "zoom": 1.0, "preset": "HOME"})
+    return {
+        "camera_id": camera_id,
+        "current_preset": current.get("preset", "MANUAL"),
+        "presets": _PTZ_PRESETS
+    }
+
+
+@router.post("/{camera_id}/ptz/goto")
+def goto_ptz_preset(camera_id: int, cmd: PTZPresetCommand, db: Session = Depends(get_db)):
+    """Move PTZ camera to a tactical preset position."""
+    c = db.get(Camera, camera_id)
+    if not c:
+        raise HTTPException(404, "Camera not found")
+
+    target = None
+    for p in _PTZ_PRESETS:
+        if p["id"].lower() == cmd.preset.lower() or p["name"].lower() == cmd.preset.lower():
+            target = p
+            break
+
+    if not target:
+        raise HTTPException(400, f"Preset '{cmd.preset}' not recognized")
+
+    state = _PTZ_STATE.setdefault(camera_id, {"pan": 0.0, "tilt": 0.0, "zoom": 1.0, "preset": "HOME"})
+    state["pan"] = target["pan"]
+    state["tilt"] = target["tilt"]
+    state["zoom"] = target["zoom"]
+    state["preset"] = target["id"]
+
+    return {
+        "status": "success",
+        "camera_id": camera_id,
+        "preset": target["name"],
+        "ptz_state": state
+    }
 
 
 @router.post("/{camera_id}/stream/start")
@@ -1099,11 +1345,17 @@ def get_snapshot(camera_id: int, db: Session = Depends(get_db)):
     frame = None
 
     if url.startswith("demo://") or not url:
-        frame = _generate_tactical_frame(c, int(time.time() * 5))
+        if settings.enable_demo:
+            frame = _generate_tactical_frame(c, int(time.time() * 5))
+        else:
+            frame = _generate_offline_frame(c)
     else:
         frame = stream_manager.get_frame(url)
         if frame is None:
-            frame = _generate_tactical_frame(c, int(time.time() * 5))
+            if settings.enable_demo:
+                frame = _generate_tactical_frame(c, int(time.time() * 5))
+            else:
+                frame = _generate_offline_frame(c)
 
     # Run detection on non-demo frames if needed
     if not url.startswith("demo://"):
@@ -1166,14 +1418,22 @@ def mjpeg_stream(camera_id: int, db: Session = Depends(get_db)):
 
     def generate():
         if url.startswith("demo://") or not url:
-            frame_idx = 0
-            while True:
-                frame_idx += 1
-                frame = _generate_tactical_frame(c, frame_idx)
+            if not settings.enable_demo:
+                frame = _generate_offline_frame(c)
                 _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                yield (b"--frame\r\n"
-                       b"Content-Type: image/jpeg\r\n\r\n" + jpeg.tobytes() + b"\r\n")
-                time.sleep(1.0 / max(1, c.fps or 10))
+                while True:
+                    yield (b"--frame\r\n"
+                           b"Content-Type: image/jpeg\r\n\r\n" + jpeg.tobytes() + b"\r\n")
+                    time.sleep(1.0)
+            else:
+                frame_idx = 0
+                while True:
+                    frame_idx += 1
+                    frame = _generate_tactical_frame(c, frame_idx)
+                    _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    yield (b"--frame\r\n"
+                           b"Content-Type: image/jpeg\r\n\r\n" + jpeg.tobytes() + b"\r\n")
+                    time.sleep(1.0 / max(1, c.fps or 10))
         else:
             frame_idx = 0
             detector = None
@@ -1187,7 +1447,10 @@ def mjpeg_stream(camera_id: int, db: Session = Depends(get_db)):
                 frame_idx += 1
                 raw = stream_manager.get_frame(url)
                 if raw is None:
-                    raw = _generate_tactical_frame(c, frame_idx)
+                    if settings.enable_demo:
+                        raw = _generate_tactical_frame(c, frame_idx)
+                    else:
+                        raw = _generate_offline_frame(c)
 
                 frame = raw.copy()
                 if detector is not None:

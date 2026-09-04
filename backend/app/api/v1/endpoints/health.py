@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from sqlalchemy import text
 
 from backend.app.db.session import SessionLocal
+from backend.app.core.cache import cached
 
 router = APIRouter()
 
@@ -47,6 +48,7 @@ def health_detailed():
 
 
 @router.get("/status")
+@cached(ttl_seconds=3, key_prefix="system_status")
 def system_status():
     """High-level system status for the dashboard header."""
     db = SessionLocal()

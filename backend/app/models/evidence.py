@@ -3,7 +3,7 @@
 from __future__ import annotations
 from typing import Optional
 from datetime import datetime
-from sqlalchemy import String, DateTime, Float, JSON, Integer, ForeignKey
+from sqlalchemy import String, DateTime, Float, JSON, Integer, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from backend.app.models.base import Base
 
@@ -15,6 +15,9 @@ class Evidence(Base):
     Supports hash-chain for tamper-evident audit.
     """
     __tablename__ = "evidence"
+    __table_args__ = (
+        Index("ix_evidence_incident_type", "incident_id", "evidence_type"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     incident_id: Mapped[int] = mapped_column(ForeignKey("incidents.id"), index=True)

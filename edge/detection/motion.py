@@ -77,12 +77,12 @@ class MotionDetector:
             for i in range(1, n_components):
                 x, y, w, h, area = stats[i]
                 if area >= 600:
-                    confidence = min(0.99, area / 5000)
+                    confidence = min(0.95, max(0.55, area / 2000.0))
                     detections.append(Detection(
-                        label="motion",
+                        label="person" if h > w * 1.2 else "motion",
                         confidence=confidence,
                         bbox=(int(x), int(y), int(x + w), int(y + h)),
-                        class_name="motion",
+                        class_name="person" if h > w * 1.2 else "motion",
                         frame_id=frame_id,
                         source="motion_mog2",
                     ))

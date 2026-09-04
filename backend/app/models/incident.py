@@ -3,7 +3,7 @@
 from __future__ import annotations
 from typing import Optional
 from datetime import datetime
-from sqlalchemy import String, Float, JSON, DateTime, Text
+from sqlalchemy import String, Float, JSON, DateTime, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from backend.app.models.base import Base
 
@@ -15,6 +15,11 @@ class Incident(Base):
     supporting signals, and recommended actions.
     """
     __tablename__ = "incidents"
+    __table_args__ = (
+        Index("ix_incidents_status_severity", "status", "severity"),
+        Index("ix_incidents_camera_created", "camera_id", "created_at"),
+        Index("ix_incidents_threat_score", "threat_score"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     incident_code: Mapped[str] = mapped_column(String(40), unique=True, index=True)
@@ -30,6 +35,8 @@ class Incident(Base):
     detection_ids: Mapped[list] = mapped_column(JSON, default=list)
     track_ids: Mapped[list] = mapped_column(JSON, default=list)
     camera_id: Mapped[Optional[int]] = mapped_column(nullable=True)
+    job_id: Mapped[Optional[int]] = mapped_column(nullable=True, index=True)
+    media_id: Mapped[Optional[int]] = mapped_column(nullable=True, index=True)
     camera_name: Mapped[str] = mapped_column(String(120), default="")
     zone_name: Mapped[str] = mapped_column(String(100), default="")
     fingerprint: Mapped[str] = mapped_column(String(128), default="",

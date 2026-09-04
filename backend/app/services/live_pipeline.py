@@ -117,6 +117,7 @@ class CameraPipeline:
         self._track_zones: Dict[str, set] = {}     # track_id -> set of zone names
         self._incident_cooldown: Dict[str, float] = {}  # fingerprint -> last_time
         self._detections_buffer = deque(maxlen=100)
+        self._frame_ring_buffer = deque(maxlen=100)  # rolling ~10s NVR clip ring buffer
         self._prev_frame = None
 
     def set_event_callback(self, callback):
@@ -213,6 +214,7 @@ class CameraPipeline:
 
             frame_id += 1
             self._frame_count = frame_id
+            self._frame_ring_buffer.append(frame.copy())
 
             # Skip frames for performance (process every 2nd frame)
             if frame_id % 2 != 0:
@@ -668,6 +670,50 @@ class CameraPipeline:
             f"({confidence:.0%}) dwell={dwell_time:.0f}s"
         )
 
+    def _generate_nvr_clip(self, incident_code: str):
+        """
+        Synthesize an MP4/AVI video clip from the rolling ring buffer for Section 65B court evidence.
+        Returns: (clip_url, clip_hash, file_size_bytes, clip_file_path)
+        """
+        if not hasattr(self, "_frame_ring_buffer") or not self._frame_ring_buffer:
+            return None, None, 0, ""
+        try:
+            from pathlib import Path
+            from backend.app.core.config import settings
+            import cv2
+            import hashlib
+
+            clips_dir = Path(settings.evidence_dir) / "clips"
+            clips_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"INC-{incident_code}.mp4"
+            file_path = clips_dir / filename
+
+            frames = list(self._frame_ring_buffer)
+            if not frames:
+                return None, None, 0, ""
+
+            h, w = frames[0].shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            out = cv2.VideoWriter(str(file_path), fourcc, 10.0, (w, h))
+            if not out.isOpened():
+                fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+                filename = f"INC-{incident_code}.avi"
+                file_path = clips_dir / filename
+                out = cv2.VideoWriter(str(file_path), fourcc, 10.0, (w, h))
+
+            for f in frames:
+                out.write(f)
+            out.release()
+
+            if file_path.exists() and file_path.stat().st_size > 0:
+                data = file_path.read_bytes()
+                h_val = hashlib.sha256(data).hexdigest()
+                url = f"/api/v1/evidence/clips/{filename}"
+                return url, h_val, len(data), str(file_path)
+        except Exception as e:
+            logger.warning(f"Camera {self.camera_id}: Failed to generate NVR clip for {incident_code}: {e}")
+        return None, None, 0, ""
+
     def _save_incident(self, code, track, reasons, severity, score, confidence,
                         fingerprint, ai_assessment, action, timeline):
         """Save a real incident to the database with rate limiting to prevent db locks and disk floods."""
@@ -687,6 +733,20 @@ class CameraPipeline:
             from backend.app.services.evidence import seal_evidence
             from datetime import datetime
             import hashlib as hl
+
+            # Generate circular NVR video clip
+            clip_url, clip_hash, clip_size, clip_path = self._generate_nvr_clip(code)
+            if clip_url:
+                ai_assessment["clip_url"] = clip_url
+                ai_assessment["clip_sha256"] = clip_hash
+                timeline.append({
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "event_type": "nvr_clip_sealed",
+                    "description": f"Section 65B rolling NVR video clip sealed: {clip_url}",
+                    "source": "nvr_subsystem",
+                    "confidence": 1.0,
+                    "payload": {"clip_url": clip_url, "sha256": clip_hash, "size_bytes": clip_size}
+                })
 
             db = SessionLocal()
             try:
@@ -727,7 +787,7 @@ class CameraPipeline:
                 )
                 db.add(alert)
 
-                # Create evidence
+                # Create snapshot evidence
                 payload = {
                     "camera_id": self.camera_id,
                     "track": track,
@@ -754,8 +814,27 @@ class CameraPipeline:
                     created_at=now,
                 )
                 db.add(evidence)
+
+                # Create NVR clip evidence if generated
+                if clip_url and clip_path:
+                    clip_ev = Evidence(
+                        incident_id=incident.id,
+                        evidence_type="clip",
+                        file_path=clip_path,
+                        sha256=clip_hash,
+                        manifest_path=manifest_path,
+                        manifest_data={"clip_url": clip_url, "size_bytes": clip_size},
+                        file_size_bytes=clip_size,
+                        threat_score=score,
+                        camera_id=self.camera_id,
+                        camera_name=self.camera_name,
+                        detection_metadata={"clip_url": clip_url, "real_detection": True},
+                        created_at=now,
+                    )
+                    db.add(clip_ev)
+
                 db.commit()
-                logger.info(f"Saved incident {code} to database (ID: {incident.id})")
+                logger.info(f"Saved incident {code} with NVR clip={bool(clip_url)} to database (ID: {incident.id})")
             except Exception as e:
                 db.rollback()
                 logger.error(f"Failed to save incident: {e}")
