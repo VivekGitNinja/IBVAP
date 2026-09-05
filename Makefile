@@ -9,11 +9,11 @@ install: ## Install Python dependencies
 
 dev: ## Start development (backend + frontend)
 	@echo "Starting IBVAP development server..."
-	PYTHONPATH=. uvicorn backend.app.main:app --reload --port 8000 &
+	PYTHONPATH=. uvicorn backend.app.main:app --reload --port 8001 &
 	cd frontend && npm run dev
 
 backend: ## Start backend only
-	PYTHONPATH=. uvicorn backend.app.main:app --reload --port 8000
+	PYTHONPATH=. uvicorn backend.app.main:app --reload --port 8001
 
 frontend: ## Start frontend only
 	cd frontend && npm run dev

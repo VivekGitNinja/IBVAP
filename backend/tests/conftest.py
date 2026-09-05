@@ -6,6 +6,13 @@ import pytest
 # Use a separate SQLite DB for tests
 os.environ["DATABASE_URL"] = "sqlite:///./test_ibvap.db"
 
+import glob
+for f in glob.glob("test_ibvap.db*"):
+    try:
+        os.remove(f)
+    except Exception:
+        pass
+
 from backend.app.db.session import engine, SessionLocal
 from backend.app.db.base import Base  # noqa: E402 — imports all models
 

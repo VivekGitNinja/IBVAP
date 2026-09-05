@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import threading
 import time
 import uuid
@@ -159,7 +160,15 @@ class VideoAnalysisEngine:
                 raise ValueError(f"Unknown source type: {job.source_type}")
 
             # 2. Open OpenCV VideoCapture
-            cap = cv2.VideoCapture(source_path)
+            if str(source_path).startswith("usb://") or str(source_path).startswith("camera://") or str(source_path).startswith("webcam://") or str(source_path).isdigit():
+                dev_idx = int(source_path if str(source_path).isdigit() else (source_path.split("://")[-1] or "0"))
+                backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
+                cap = cv2.VideoCapture(dev_idx, backend)
+            elif str(source_path).startswith("rtsp://"):
+                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+                cap = cv2.VideoCapture(source_path)
+            else:
+                cap = cv2.VideoCapture(source_path)
             if not cap.isOpened():
                 raise RuntimeError(f"OpenCV could not open video source: {source_path}")
 

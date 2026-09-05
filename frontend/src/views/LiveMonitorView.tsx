@@ -783,24 +783,33 @@ function UniversalCameraStudio({ onDone, onCancel }: { onDone: () => void; onCan
   const [remoteUrl, setRemoteUrl] = useState('');
   const [remoteBop, setRemoteBop] = useState('BOP-01 Alpha');
 
-  // Auto-detect host network info on mount
-  useEffect(() => {
-    api.networkInfo().then((info: any) => {
+  const refreshNetworkInfo = async () => {
+    try {
+      const info: any = await api.networkInfo();
       if (info?.subnet) setSubnet(info.subnet);
       if (info?.local_ip) {
         setLocalIp(info.local_ip);
         setProbeIp(info.local_ip.replace(/\.\d+$/, '.107'));
       }
-    }).catch(() => {});
+      return info;
+    } catch (e: any) {
+      return null;
+    }
+  };
+
+  // Auto-detect host network info on mount
+  useEffect(() => {
+    refreshNetworkInfo();
   }, []);
 
   const runLanScan = async () => {
     setScanning(true);
-    setStatusMsg(null);
+    setStatusMsg('Initiating ultra-fast network hardware scan...');
     playTacticalTone('click');
     const t0 = Date.now();
     try {
-      const r = await api.discoverCameras(subnet);
+      const targetSubnet = subnet.trim() || 'auto';
+      const r = await api.discoverCameras(targetSubnet);
       const list = Array.isArray(r) ? r : (r as any).discovered || [];
       // Filter out gateway router if desired or keep with tag
       setFound(list);
@@ -808,13 +817,19 @@ function UniversalCameraStudio({ onDone, onCancel }: { onDone: () => void; onCan
       setScanDuration(dur);
       playTacticalTone(list.length > 0 ? 'verify' : 'alert');
       if (list.length > 0) {
-        setStatusMsg(`Discovered ${list.length} hardware endpoints on subnet ${subnet}.0/24 in ${dur}s.`);
+        setStatusMsg(`Discovered ${list.length} hardware endpoints on subnet ${targetSubnet}.0/24 in ${dur}s.`);
       } else {
-        setStatusMsg(`Scan complete in ${dur}s — 0 endpoints detected.`);
+        setStatusMsg(`Scan complete in ${dur}s — 0 endpoints detected on ${targetSubnet}.0/24.`);
       }
     } catch (e: any) {
       setFound([]);
-      setStatusMsg(`Scan error: ${e.message || 'Subnet probe timed out'}`);
+      const errMsg = e.message || '';
+      if (errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError')) {
+        setStatusMsg('Scan error: Backend service unreachable on :8001. Ensure uvicorn is running.');
+      } else {
+        setStatusMsg(`Scan error: ${errMsg || 'Subnet probe timed out'}`);
+      }
+      playTacticalTone('alert');
     }
     setScanning(false);
   };
@@ -924,14 +939,27 @@ function UniversalCameraStudio({ onDone, onCancel }: { onDone: () => void; onCan
             <div>
               <div style={{ display: 'flex', gap: 10, marginBottom: 16, alignItems: 'center' }}>
                 <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 11, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
-                    TARGET SUBNET BASE (AUTO-RESOLVED)
-                  </label>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <label style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                      TARGET SUBNET BASE (AUTO-RESOLVED)
+                    </label>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-secondary"
+                      style={{ padding: '2px 8px', fontSize: 11 }}
+                      onClick={async () => {
+                        const inf = await refreshNetworkInfo();
+                        if (inf?.subnet) setStatusMsg(`Resolved active subnet: ${inf.subnet}.0/24 (Host: ${inf.local_ip})`);
+                      }}
+                    >
+                      ⚡ Auto-Detect
+                    </button>
+                  </div>
                   <input
                     type="text"
                     value={subnet}
                     onChange={(e) => setSubnet(e.target.value)}
-                    placeholder="192.168.29"
+                    placeholder="e.g. 192.168.29 or 10.238.254"
                     style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: 13 }}
                   />
                 </div>

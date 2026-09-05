@@ -1,6 +1,7 @@
 """Camera management endpoints with Universal Multi-Camera Discovery & Connection Hub."""
 
 import os
+import sys
 import re
 import socket
 import struct
@@ -14,11 +15,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException, Body, Response
+from fastapi import APIRouter, Depends, HTTPException, Body, Response, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from pathlib import Path
 from backend.app.core.config import settings
+from backend.app.core.logging import get_logger
 from backend.app.db.session import get_db
 from backend.app.models.camera import Camera
 from backend.app.models.camera_health import CameraHealth
@@ -26,6 +29,7 @@ from backend.app.schemas.common import CameraIn, CameraOut, CameraHealthOut, Cam
 from backend.app.services.audit import log_action
 from backend.app.api.deps import current_user
 
+logger = get_logger("cameras")
 router = APIRouter()
 
 
@@ -123,18 +127,88 @@ CAMERA_OUI_DATABASE: Dict[str, tuple] = {
 
 
 def get_active_lan_subnet() -> tuple[str, str]:
-    """Auto-detect active LAN IP and /24 subnet base (e.g. ('192.168.29.253', '192.168.29'))."""
+    """
+    Auto-detect active host LAN IP and /24 subnet base (e.g. ('10.238.254.36', '10.238.254')).
+    Tier 1: UDP connect to public DNS targets (instant, works if routing table has default route).
+    Tier 2: Query system default route interface and read interface IP via netstat / ifconfig.
+    Tier 3: Parse ifconfig for active interface with valid IPv4 address.
+    Tier 4: Linux ip route / ip addr inspection.
+    Fallback: Local loopback ('127.0.0.1', '127.0.0').
+    """
+    # Tier 1: UDP connect probe (no traffic is transmitted, just kernel route lookup)
+    for test_target in [("8.8.8.8", 80), ("1.1.1.1", 80)]:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(0.5)
+            s.connect(test_target)
+            lip = s.getsockname()[0]
+            s.close()
+            parts = lip.split(".")
+            if len(parts) == 4 and not lip.startswith("127."):
+                return lip, ".".join(parts[:3])
+        except Exception:
+            pass
+
+    # Tier 2: macOS / BSD default route inspection
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        lip = s.getsockname()[0]
-        s.close()
-        parts = lip.split(".")
-        if len(parts) == 4 and not lip.startswith("127."):
-            return lip, ".".join(parts[:3])
+        out = subprocess.run(["netstat", "-rn"], capture_output=True, text=True, timeout=2).stdout
+        for line in out.splitlines():
+            if line.startswith("default"):
+                parts = line.split()
+                if len(parts) >= 4:
+                    iface = parts[-1]
+                    if_out = subprocess.run(["ifconfig", iface], capture_output=True, text=True, timeout=2).stdout
+                    m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", if_out)
+                    if m:
+                        lip = m.group(1)
+                        if not lip.startswith("127."):
+                            parts = lip.split(".")
+                            if len(parts) == 4:
+                                return lip, ".".join(parts[:3])
     except Exception:
         pass
-    return "192.168.29.253", "192.168.29"
+
+    # Tier 3: Parse ifconfig for active interface
+    try:
+        out = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=2).stdout
+        current_active = False
+        candidates: List[tuple[str, bool]] = []
+        for line in out.splitlines():
+            if line and not line.startswith("\t") and ":" in line:
+                current_active = False
+            if "status: active" in line:
+                current_active = True
+            m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", line)
+            if m:
+                ip = m.group(1)
+                if not ip.startswith("127."):
+                    candidates.append((ip, current_active))
+        for ip, active in candidates:
+            if active:
+                parts = ip.split(".")
+                if len(parts) == 4:
+                    return ip, ".".join(parts[:3])
+        if candidates:
+            parts = candidates[0][0].split(".")
+            if len(parts) == 4:
+                return candidates[0][0], ".".join(parts[:3])
+    except Exception:
+        pass
+
+    # Tier 4: Linux fallback via ip route / ip -o addr
+    try:
+        out = subprocess.run(["ip", "-o", "-4", "addr", "show"], capture_output=True, text=True, timeout=2).stdout
+        for line in out.splitlines():
+            m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", line)
+            if m and not m.group(1).startswith("127."):
+                lip = m.group(1)
+                parts = lip.split(".")
+                if len(parts) == 4:
+                    return lip, ".".join(parts[:3])
+    except Exception:
+        pass
+
+    return "127.0.0.1", "127.0.0"
 
 
 class BrandPreset(BaseModel):
@@ -227,34 +301,51 @@ def get_network_info():
 def discover_cameras(req: DiscoverRequest):
     """
     Ultra-Fast Deep Network Camera & Device Discovery:
-    1. Auto-resolves active subnet base (e.g. 192.168.29) if empty or default.
-    2. Runs fast parallel ping sweep (120ms) across 254 subnet nodes.
-    3. Queries kernel ARP cache to capture all physically attached Wi-Fi/LAN devices.
-    4. Identifies hardware vendor and camera brand via IEEE OUI prefixes.
-    5. Probes camera streaming ports concurrently (554, 8554, 8000, 8080, 443, 37777, 4747).
+    1. Auto-resolves active subnet base if empty or 'auto'.
+    2. Runs fast parallel TCP touch (non-blocking) across subnet nodes to refresh kernel ARP table without subprocess overhead.
+    3. Queries kernel ARP cache on macOS/Linux to capture physically attached Wi-Fi/LAN devices.
+    4. Identifies hardware vendor and camera brand via IEEE OUI prefixes and MAC characteristics.
+    5. Probes camera streaming ports concurrently (554, 8554, 8000, 8080, 80, 443, 37777, 34567, 4747).
     6. Generates pre-configured, tested RTSP/HTTP stream templates and setup tips.
     """
     local_ip, auto_subnet = get_active_lan_subnet()
-    base = req.ip_range.strip(".") if req.ip_range and req.ip_range not in ("192.168.1", "auto", "") else auto_subnet
+    if req.ip_range and req.ip_range.strip() and req.ip_range.strip().lower() not in ("auto", ""):
+        base = req.ip_range.strip().rstrip(".")
+    else:
+        base = auto_subnet
 
-    # 1. Fast parallel ping sweep to ensure ARP table is fully populated
-    def ping_node(i: int):
+    # 1. Fast parallel TCP touch across subnet range to populate ARP table natively without ping subprocess overhead
+    def touch_node(i: int):
         target_ip = f"{base}.{i}"
-        subprocess.run(["ping", "-c", "1", "-W", "120", target_ip],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for p in (80, 554, 8080, 443):
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.06)
+                s.connect_ex((target_ip, p))
+                s.close()
+                break
+            except Exception:
+                pass
 
-    with ThreadPoolExecutor(max_workers=80) as executor:
-        list(executor.map(ping_node, range(req.start, min(req.end + 1, 255))))
+    start_node = max(1, min(req.start, 254))
+    end_node = max(start_node, min(req.end, 254))
+
+    try:
+        with ThreadPoolExecutor(max_workers=50) as executor:
+            list(executor.map(touch_node, range(start_node, end_node + 1)))
+    except Exception as e:
+        logger.warning(f"Subnet touch exception: {e}")
 
     # 2. Read ARP table on macOS / Linux
     arp_map: Dict[str, str] = {}
+    base_prefix = f"{base}."
     try:
         arp_out = subprocess.run(["arp", "-a"], capture_output=True, text=True, timeout=3).stdout
         for line in arp_out.splitlines():
             m = re.search(r'\((\d+\.\d+\.\d+\.\d+)\) at ([0-9a-fA-F:]+)', line)
             if m:
                 ip, mac = m.group(1), m.group(2).lower()
-                if ip.startswith(base) and mac != "(incomplete)" and not mac.startswith("ff:"):
+                if ip.startswith(base_prefix) and mac != "(incomplete)" and not mac.startswith("ff:"):
                     # Normalize MAC into standard 2-digit hex
                     try:
                         mac_norm = ":".join([f"{int(p, 16):02x}" for p in mac.split(":")])
@@ -262,31 +353,49 @@ def discover_cameras(req: DiscoverRequest):
                     except Exception:
                         arp_map[ip] = mac
     except Exception as e:
-        print(f"ARP scan error: {e}")
+        logger.warning(f"ARP scan error: {e}")
 
-    # Also make sure the local machine is tracked
-    if local_ip not in arp_map and local_ip.startswith(base):
+    # Linux /proc/net/arp fallback if arp -a produced nothing
+    if not arp_map and Path("/proc/net/arp").is_file():
+        try:
+            with open("/proc/net/arp", "r") as f:
+                for line in f.readlines()[1:]:
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        ip, flags, mac = parts[0], parts[2], parts[3].lower()
+                        if flags != "0x0" and ip.startswith(base_prefix) and mac != "00:00:00:00:00:00":
+                            arp_map[ip] = mac
+        except Exception as e:
+            logger.warning(f"/proc/net/arp read error: {e}")
+
+    # Track local host if on the scanned subnet
+    if local_ip.startswith(base_prefix) and local_ip not in arp_map:
         arp_map[local_ip] = "local-host"
 
+    # Also check gateway node f"{base}.1" even if ARP doesn't list it yet
+    gw_ip = f"{base}.1"
+    if gw_ip not in arp_map:
+        arp_map[gw_ip] = "gateway-router"
+
     # 3. Concurrent Multi-Port Prober on all discovered IPs
-    scan_ports = [554, 8554, 8000, 8080, 80, 443, 37777, 34567, 4747, 5000]
+    scan_ports = [554, 8554, 8000, 8080, 80, 443, 37777, 34567, 4747, 5000, 22]
     discovered_list: List[DiscoveredCamera] = []
 
-    def probe_device(ip: str, mac: str):
-        open_ports = []
+    def probe_device(ip: str, mac: str) -> Optional[DiscoveredCamera]:
+        open_ports: List[int] = []
         best_port = 554
         t0 = time.time()
         for p in scan_ports:
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(0.18)
+                s.settimeout(0.15)
                 res = s.connect_ex((ip, p))
                 s.close()
                 if res == 0:
                     open_ports.append(p)
             except Exception:
                 pass
-        latency = round((time.time() - t0) * 1000 / len(scan_ports), 1)
+        latency = round((time.time() - t0) * 1000 / max(1, len(scan_ports)), 1)
 
         # Determine best port
         if 554 in open_ports:
@@ -302,8 +411,7 @@ def discover_cameras(req: DiscoverRequest):
         elif open_ports:
             best_port = open_ports[0]
 
-        # Determine brand and OUI info
-        is_gw = (ip == f"{base}.1")
+        is_gw = (ip == gw_ip)
         prefix = mac[:8]
         oui_match = CAMERA_OUI_DATABASE.get(prefix)
 
@@ -313,8 +421,12 @@ def discover_cameras(req: DiscoverRequest):
             brand_name = "Wi-Fi Gateway Router"
             rtsp_tmpl = "http://{ip}:80"
             tip = f"Network Router Gateway ({ip})"
+        elif ip == local_ip or mac == "local-host":
+            brand_name = "Local Host Surveillance Node"
+            rtsp_tmpl = "http://{ip}:8001"
+            tip = f"Local Station ({local_ip})"
         else:
-            # Check if MAC has randomized/private bit set (typical for Android/iOS phones & tablets)
+            # Check if MAC has randomized/private bit set (typical for mobile devices)
             try:
                 first_byte = int(mac[:2], 16)
                 if (first_byte & 0x02) != 0:
@@ -326,14 +438,27 @@ def discover_cameras(req: DiscoverRequest):
                         brand_name = "Mobile Phone (IP Webcam Live)"
                         rtsp_tmpl = "http://{ip}:8080/video"
                         tip = "IP Webcam stream active on port 8080"
+                    elif 8554 in open_ports:
+                        brand_name = "Mobile RTSP Broadcast Node"
+                        rtsp_tmpl = "rtsp://{ip}:8554/live"
+                        tip = "RTSP streaming server active on port 8554"
                     else:
                         brand_name = "Mobile Video Node (Android/iOS)"
                         rtsp_tmpl = "http://{ip}:8080/video"
-                        tip = "Connect via IP Webcam app (8080), DroidCam (4747), or Browser Live Link"
+                        tip = "Connect via IP Webcam (8080), DroidCam (4747), or Browser Live Link"
                 else:
-                    brand_name = "Network Surveillance Camera"
-                    rtsp_tmpl = "rtsp://{user}:{pwd}@{ip}:554/live"
-                    tip = "Test with camera RTSP credentials"
+                    if 8554 in open_ports:
+                        brand_name = "RTSP Network Camera"
+                        rtsp_tmpl = "rtsp://{user}:{pwd}@{ip}:8554/live"
+                        tip = "RTSP server on alternate port 8554"
+                    elif 554 in open_ports:
+                        brand_name = "Network Surveillance Camera"
+                        rtsp_tmpl = "rtsp://{user}:{pwd}@{ip}:554/live"
+                        tip = "Test with camera RTSP credentials"
+                    else:
+                        brand_name = "Network Surveillance Camera"
+                        rtsp_tmpl = "rtsp://{user}:{pwd}@{ip}:554/stream1"
+                        tip = "Standard network surveillance device"
             except Exception:
                 brand_name = "Network Surveillance Node"
                 rtsp_tmpl = "rtsp://{user}:{pwd}@{ip}:554/stream1"
@@ -378,12 +503,13 @@ def discover_cameras(req: DiscoverRequest):
         for p in probes:
             try:
                 res = p.result()
-                discovered_list.append(res)
+                if res is not None:
+                    discovered_list.append(res)
             except Exception as e:
-                print(f"Probe device error: {e}")
+                logger.warning(f"Probe device error: {e}")
 
     # Sort numerically by IP
-    discovered_list.sort(key=lambda x: [int(p) for p in x.ip.split(".")])
+    discovered_list.sort(key=lambda x: [int(p) if p.isdigit() else 0 for p in x.ip.split(".")])
     return discovered_list
 
 
@@ -574,10 +700,14 @@ def test_stream(req: StreamTestRequest):
 
     def probe():
         try:
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "timeout;2500000"
-            if url.startswith("usb://"):
-                device_id = int(url.replace("usb://", "") or "0")
-                cap = cv2.VideoCapture(device_id)
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|timeout;2500000"
+            if url.startswith("usb://") or url.startswith("camera://") or url.startswith("webcam://") or url.isdigit():
+                if url.isdigit():
+                    device_id = int(url)
+                else:
+                    device_id = int(url.split("://")[-1] or "0")
+                backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
+                cap = cv2.VideoCapture(device_id, backend)
             elif url.startswith("file://"):
                 path = url.replace("file://", "")
                 cap = cv2.VideoCapture(path)
@@ -861,9 +991,13 @@ def test_camera_connection(camera_id: int, db: Session = Depends(get_db)):
         }
 
     try:
-        if url.startswith("usb://"):
-            dev_idx = int(url.replace("usb://", "") or "0")
-            cap = cv2.VideoCapture(dev_idx)
+        if url.startswith("usb://") or url.startswith("camera://") or url.startswith("webcam://") or url.isdigit():
+            if url.isdigit():
+                dev_idx = int(url)
+            else:
+                dev_idx = int(url.split("://")[-1] or "0")
+            backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
+            cap = cv2.VideoCapture(dev_idx, backend)
         elif url.startswith("file://"):
             fpath = url.replace("file://", "")
             if not os.path.exists(fpath):
@@ -880,6 +1014,7 @@ def test_camera_connection(camera_id: int, db: Session = Depends(get_db)):
             return {"success": True, "status": "ONLINE", "message": "Demo stream accessible", "resolution": "1280x720", "fps": 15, "camera_id": camera_id}
         else:
             # RTSP or network stream
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
             cap = cv2.VideoCapture(url)
 
         if not cap.isOpened():
@@ -1210,9 +1345,13 @@ class StreamCaptureManager:
     def _background_connect_and_stream(self, url: str):
         cap = None
         try:
-            if url.startswith("usb://"):
-                device_id = int(url.replace("usb://", "") or "0")
-                cap = cv2.VideoCapture(device_id)
+            if url.startswith("usb://") or url.startswith("camera://") or url.startswith("webcam://") or url.isdigit():
+                if url.isdigit():
+                    device_id = int(url)
+                else:
+                    device_id = int(url.split("://")[-1] or "0")
+                backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
+                cap = cv2.VideoCapture(device_id, backend)
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
             elif url.startswith("file://"):
@@ -1237,7 +1376,7 @@ class StreamCaptureManager:
                     self._running[url] = False
                     return
 
-                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "timeout;1200000"
+                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|timeout;1200000"
                 cap = cv2.VideoCapture(url)
 
             if not cap or not cap.isOpened():
@@ -1400,7 +1539,8 @@ def get_snapshot(camera_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{camera_id}/stream")
-def mjpeg_stream(camera_id: int, db: Session = Depends(get_db)):
+@router.get("/{camera_id}/mjpeg")
+async def mjpeg_stream(camera_id: int, request: Request, max_frames: Optional[int] = None, db: Session = Depends(get_db)):
     """
     MJPEG live stream endpoint.
     Frontend connects via: <img src="/api/v1/cameras/{id}/stream">
@@ -1409,6 +1549,7 @@ def mjpeg_stream(camera_id: int, db: Session = Depends(get_db)):
     from fastapi.responses import StreamingResponse
     import cv2
     import io
+    import asyncio
 
     c = db.get(Camera, camera_id)
     if not c:
@@ -1416,60 +1557,81 @@ def mjpeg_stream(camera_id: int, db: Session = Depends(get_db)):
 
     url = c.stream_url or ""
 
-    def generate():
-        if url.startswith("demo://") or not url:
-            if not settings.enable_demo:
-                frame = _generate_offline_frame(c)
-                _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                while True:
-                    yield (b"--frame\r\n"
-                           b"Content-Type: image/jpeg\r\n\r\n" + jpeg.tobytes() + b"\r\n")
-                    time.sleep(1.0)
+    async def generate():
+        try:
+            if url.startswith("demo://") or not url:
+                if not settings.enable_demo:
+                    frame = _generate_offline_frame(c)
+                    _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    frame_bytes = jpeg.tobytes()
+                    frame_idx = 0
+                    sleep_dur = 0.02 if max_frames else 1.0
+                    while True:
+                        if await request.is_disconnected():
+                            break
+                        if max_frames is not None and frame_idx >= max_frames:
+                            break
+                        frame_idx += 1
+                        yield (b"--frame\r\n"
+                               b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
+                        await asyncio.sleep(sleep_dur)
+                else:
+                    frame_idx = 0
+                    sleep_dur = 0.02 if max_frames else (1.0 / max(1, c.fps or 10))
+                    while True:
+                        if await request.is_disconnected():
+                            break
+                        if max_frames is not None and frame_idx >= max_frames:
+                            break
+                        frame_idx += 1
+                        frame = _generate_tactical_frame(c, frame_idx)
+                        _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                        yield (b"--frame\r\n"
+                               b"Content-Type: image/jpeg\r\n\r\n" + jpeg.tobytes() + b"\r\n")
+                        await asyncio.sleep(sleep_dur)
             else:
                 frame_idx = 0
+                detector = None
+                try:
+                    from edge.detection.factory import create_detector
+                    detector = create_detector("yolo26n")
+                except Exception:
+                    pass
+
+                sleep_dur = 0.02 if max_frames else (1.0 / max(1, c.fps or 15))
                 while True:
+                    if await request.is_disconnected():
+                        break
+                    if max_frames is not None and frame_idx >= max_frames:
+                        break
                     frame_idx += 1
-                    frame = _generate_tactical_frame(c, frame_idx)
+                    raw = stream_manager.get_frame(url)
+                    if raw is None:
+                        if settings.enable_demo:
+                            raw = _generate_tactical_frame(c, frame_idx)
+                        else:
+                            raw = _generate_offline_frame(c)
+
+                    frame = raw.copy()
+                    if detector is not None:
+                        try:
+                            detections = detector.detect(frame)
+                            for det in detections:
+                                x1, y1, x2, y2 = [int(v) for v in det.bbox]
+                                label = f"{det.class_name} {det.confidence:.0%}"
+                                color = (0, 255, 0) if det.class_name == "person" else (0, 165, 255)
+                                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                                cv2.putText(frame, label, (x1, max(15, y1 - 5)),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                        except Exception:
+                            pass
+
                     _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     yield (b"--frame\r\n"
                            b"Content-Type: image/jpeg\r\n\r\n" + jpeg.tobytes() + b"\r\n")
-                    time.sleep(1.0 / max(1, c.fps or 10))
-        else:
-            frame_idx = 0
-            detector = None
-            try:
-                from edge.detection.factory import create_detector
-                detector = create_detector("yolo26n")
-            except Exception:
-                pass
-
-            while True:
-                frame_idx += 1
-                raw = stream_manager.get_frame(url)
-                if raw is None:
-                    if settings.enable_demo:
-                        raw = _generate_tactical_frame(c, frame_idx)
-                    else:
-                        raw = _generate_offline_frame(c)
-
-                frame = raw.copy()
-                if detector is not None:
-                    try:
-                        detections = detector.detect(frame)
-                        for det in detections:
-                            x1, y1, x2, y2 = [int(v) for v in det.bbox]
-                            label = f"{det.class_name} {det.confidence:.0%}"
-                            color = (0, 255, 0) if det.class_name == "person" else (0, 165, 255)
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                            cv2.putText(frame, label, (x1, max(15, y1 - 5)),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-                    except Exception:
-                        pass
-
-                _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                yield (b"--frame\r\n"
-                       b"Content-Type: image/jpeg\r\n\r\n" + jpeg.tobytes() + b"\r\n")
-                time.sleep(1.0 / max(1, c.fps or 15))
+                    await asyncio.sleep(sleep_dur)
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
 
     return StreamingResponse(
         generate(),

@@ -245,9 +245,13 @@ class CameraPipeline:
     def _open_stream(self):
         """Open the video stream."""
         url = self.stream_url
-        if url.startswith("usb://"):
-            device_id = int(url.replace("usb://", "") or "0")
-            return cv2.VideoCapture(device_id)
+        if url.startswith("usb://") or url.startswith("camera://") or url.startswith("webcam://") or url.isdigit():
+            if url.isdigit():
+                device_id = int(url)
+            else:
+                device_id = int(url.split("://")[-1] or "0")
+            backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
+            return cv2.VideoCapture(device_id, backend)
         elif url.startswith("file://"):
             path = url.replace("file://", "")
             if not os.path.exists(path):
@@ -260,7 +264,8 @@ class CameraPipeline:
         elif url.startswith("phone://"):
             return self._create_phone_capture(url)
         else:
-            # RTSP
+            # RTSP or network stream
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
             return cv2.VideoCapture(url)
 
     def _create_phone_capture(self, url: str):

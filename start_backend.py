@@ -45,13 +45,17 @@ if pid2 > 0:
 with open(PID_FILE, "w") as f:
     f.write(str(os.getpid()))
 
-os.chdir("/Users/vivek/Downloads/ibvap")
-sys.path.insert(0, "/Users/vivek/Downloads/ibvap")
+repo_dir = "/Users/vivek/Downloads/ibvap"
+os.chdir(repo_dir)
+sys.path.insert(0, repo_dir)
+
+venv_py = os.path.join(repo_dir, ".venv", "bin", "python3")
+py_bin = venv_py if os.path.exists(venv_py) else sys.executable
 
 # Redirect stdout/stderr to log file
 log_fd = open(LOG_FILE, "w")
 os.dup2(log_fd.fileno(), 1)
 os.dup2(log_fd.fileno(), 2)
 
-os.execvp(sys.executable, [sys.executable, "-m", "uvicorn", 
-    "backend.app.main:app", "--host", "127.0.0.1", "--port", "8001"])
+os.execvp(py_bin, [py_bin, "-m", "uvicorn", 
+    "backend.app.main:app", "--host", "0.0.0.0", "--port", "8001"])
