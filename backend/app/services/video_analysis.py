@@ -49,6 +49,7 @@ logger = logging.getLogger("ibvap.analysis")
 _job_subscribers: Dict[int, List[WebSocket]] = {}
 _subscriber_lock = threading.Lock()
 _active_tasks: Dict[int, threading.Event] = {}
+_active_threads: Dict[int, threading.Thread] = {}
 _event_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
@@ -102,6 +103,8 @@ def broadcast_job_event_sync(job_id: int, payload: dict) -> None:
 class VideoAnalysisEngine:
     """Executes deterministic computer vision analysis on real video files or streams."""
 
+    _running_jobs = _active_threads
+
     @classmethod
     def start_job(cls, job_id: int) -> None:
         """Launch background worker thread for an analysis job."""
@@ -114,6 +117,7 @@ class VideoAnalysisEngine:
             daemon=True,
             name=f"analysis-job-{job_id}",
         )
+        _active_threads[job_id] = worker
         worker.start()
 
     @classmethod
@@ -184,6 +188,9 @@ class VideoAnalysisEngine:
             detector = create_detector(
                 preferred=job.detector_model or "yolo26n",
                 confidence_threshold=job.confidence_threshold or 0.25,
+                min_area=settings.motion_min_area,
+                persistence_frames=settings.motion_persistence_frames,
+                conf_floor=settings.motion_conf_floor,
             )
             logger.info(f"Job {job_id}: Processing with {detector.name} ({total_frames} frames @ {fps:.1f} fps)")
 
@@ -191,7 +198,13 @@ class VideoAnalysisEngine:
             try:
                 from edge.detection.motion import MotionDetector
                 if not isinstance(detector, MotionDetector):
-                    fallback_detector = create_detector("motion", confidence_threshold=0.2)
+                    fallback_detector = create_detector(
+                        "motion",
+                        confidence_threshold=0.2,
+                        min_area=settings.motion_min_area,
+                        persistence_frames=settings.motion_persistence_frames,
+                        conf_floor=settings.motion_conf_floor,
+                    )
             except Exception:
                 pass
 
@@ -939,4 +952,5 @@ class VideoAnalysisEngine:
             })
         finally:
             _active_tasks.pop(job_id, None)
+            _active_threads.pop(job_id, None)
             db.close()

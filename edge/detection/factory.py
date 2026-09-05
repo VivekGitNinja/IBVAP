@@ -24,6 +24,7 @@ def create_detector(
     preferred: Optional[str] = None,
     confidence_threshold: float = 0.25,
     border_only: bool = False,
+    **kwargs,
 ) -> Detector:
     """Create the best available detector.
     
@@ -31,12 +32,13 @@ def create_detector(
         preferred: preferred detector name ('yolo26', 'yolo11', 'onnx', 'motion')
         confidence_threshold: minimum detection confidence
         border_only: if True, only detect border-relevant classes
+        **kwargs: additional detector configurations (e.g. min_area, persistence_frames, conf_floor)
     
     Returns:
         Best available Detector instance
     """
     if preferred:
-        detector = _try_create(preferred, confidence_threshold, border_only)
+        detector = _try_create(preferred, confidence_threshold, border_only, **kwargs)
         if detector and detector.is_available:
             logger.info(f"Using preferred detector: {detector.name}")
             return detector
@@ -44,20 +46,26 @@ def create_detector(
 
     # Auto-select: try in order of capability
     for name in ["yolo26", "yolo11", "onnx", "motion"]:
-        detector = _try_create(name, confidence_threshold, border_only)
+        detector = _try_create(name, confidence_threshold, border_only, **kwargs)
         if detector and detector.is_available:
             logger.info(f"Auto-selected detector: {detector.name}")
             return detector
 
     # Should never reach here (motion always available)
     from edge.detection.motion import MotionDetector
-    return MotionDetector(confidence_threshold)
+    return MotionDetector(
+        confidence_threshold=confidence_threshold,
+        min_area=kwargs.get("min_area", 600),
+        persistence_frames=kwargs.get("persistence_frames", 3),
+        conf_floor=kwargs.get("conf_floor", 0.55),
+    )
 
 
 def _try_create(
     name: str,
     confidence_threshold: float,
     border_only: bool,
+    **kwargs,
 ) -> Optional[Detector]:
     """Try to create a specific detector supporting various aliases."""
     if not name:
@@ -85,7 +93,12 @@ def _try_create(
             return ONNXDetector(confidence_threshold=confidence_threshold)
         elif norm.startswith("motion") or "mog" in norm:
             from edge.detection.motion import MotionDetector
-            return MotionDetector(confidence_threshold=confidence_threshold)
+            return MotionDetector(
+                confidence_threshold=confidence_threshold,
+                min_area=kwargs.get("min_area", 600),
+                persistence_frames=kwargs.get("persistence_frames", 3),
+                conf_floor=kwargs.get("conf_floor", 0.55),
+            )
     except Exception as e:
         logger.debug(f"Failed to create {name} detector: {e}")
     return None

@@ -134,4 +134,17 @@ The `ZoneCrossingEngine` (`backend/app/services/zone_engine.py`) consumes active
 
 ---
 
+## 8. Heuristic Fallback & Confidence Integrity
+
+In edge deployments where deep neural network inference (YOLO26 / YOLO11) is unavailable or throttled, IBVAP falls back to the OpenCV MOG2 background subtractor.
+
+`confidence = min(0.95, max(0.55, area/2000)) — synthesized for the heuristic fallback; YOLO path uses native model confidence; false-positive control is via zone thresholds, cooldown, and persistence gating.`
+
+### Configurable Gating Controls
+- `motion_min_area`: Minimum contour area in pixels to reject sensor grain (default: 600 px).
+- `motion_persistence_frames`: Minimum consecutive frames an object must persist before a detection is emitted (default: 3 frames).
+- `motion_conf_floor`: Synthesized baseline confidence floor (default: 0.55).
+
+---
+
 *Document maintained by the IBVAP CV Engineering Team — SIH 2026*

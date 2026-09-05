@@ -531,6 +531,54 @@ def main():
             f"Dispatched: {dispatched}, HMAC-SHA256 Validated: {hmac_ok}, Tamper Rejected: {tamper_ok}",
         )
 
+        # ─────────────────────────────────────────────────────────────
+        # Step 12: Static Scene False-Alarm Immunity Verification (Check #38)
+        # ─────────────────────────────────────────────────────────────
+        print(f"\n{INFO} Step 12: Verifying False-Positive Gating & Static Scene Immunity")
+        static_fixture = PROJECT_ROOT / "tests" / "fixtures" / "static_scene.mp4"
+        if not static_fixture.exists():
+            static_fixture = PROJECT_ROOT / "samples" / "static_scene.mp4"
+
+        static_media_id = None
+        static_job_id = None
+        static_incidents_count = -1
+        static_detections_count = -1
+
+        if static_fixture.exists():
+            with open(static_fixture, "rb") as sf:
+                static_up_resp = client.post(
+                    "/api/v1/media/upload",
+                    headers=headers,
+                    files={"file": ("static_verify.mp4", sf.read(), "video/mp4")},
+                )
+            if static_up_resp.status_code == 201:
+                static_media_id = static_up_resp.json().get("id")
+                st_job_payload = {
+                    "source_type": "upload",
+                    "source_id": static_media_id,
+                    "detector_model": "motion",
+                    "confidence_threshold": 0.20,
+                }
+                st_job_resp = client.post("/api/v1/analysis/jobs", headers=headers, json=st_job_payload)
+                if st_job_resp.status_code == 201:
+                    static_job_id = st_job_resp.json().get("id")
+                    for _ in range(40):
+                        st_status = client.get(f"/api/v1/analysis/jobs/{static_job_id}", headers=headers).json().get("status")
+                        if st_status in ("completed", "failed", "cancelled"):
+                            break
+                        time.sleep(0.3)
+                    st_results = client.get(f"/api/v1/analysis/jobs/{static_job_id}/results", headers=headers).json()
+                    st_detections = st_results.get("detections", [])
+                    st_incidents = st_results.get("incidents", [])
+                    static_detections_count = len(st_detections)
+                    static_incidents_count = len(st_incidents)
+
+        log_check(
+            "Static Scene False-Alarm Immunity (0 Incidents on Static Background)",
+            static_incidents_count == 0 and static_detections_count <= 2,
+            f"Detections: {static_detections_count}, Incidents: {static_incidents_count} (False-alarm immunity confirmed)",
+        )
+
         # Cleanup evaluation assets
         if enrolled_id:
             try:

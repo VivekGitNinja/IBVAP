@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     c2_webhook_url: str = ""
     c2_webhook_secret: str = "c2-tactical-secret-key"
 
+    # Motion Fallback Noise Gating & Confidence Flags
+    motion_min_area: int = 600
+    motion_persistence_frames: int = 3
+    motion_conf_floor: float = 0.55
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 import logging
 import os
+import threading
 from typing import Optional, Tuple, List, Dict, Any
 import cv2
 import numpy as np
@@ -30,6 +31,7 @@ class FaceService:
         self._recognition_backend = "none"
         self._recognition_reason = ""
         self._recognizer = None
+        self._lock = threading.Lock()
         self._init_detector()
 
     def _init_detector(self):
@@ -110,8 +112,9 @@ class FaceService:
 
         if self._detector_type == "YuNet" and self._detector is not None:
             try:
-                self._detector.setInputSize((w, h))
-                _, detected = self._detector.detect(frame)
+                with self._lock:
+                    self._detector.setInputSize((w, h))
+                    _, detected = self._detector.detect(frame)
                 if detected is not None:
                     for d in detected:
                         fx, fy, fw, fh = d[:4]
@@ -207,24 +210,25 @@ class FaceService:
 
         if getattr(self, "_recognition_backend", "") == "SFace":
             try:
-                aligned = None
-                if raw_face is not None and full_frame is not None:
-                    try:
-                        aligned = self._recognizer.alignCrop(full_frame, raw_face)
-                    except Exception:
-                        aligned = None
+                with self._lock:
+                    aligned = None
+                    if raw_face is not None and full_frame is not None:
+                        try:
+                            aligned = self._recognizer.alignCrop(full_frame, raw_face)
+                        except Exception:
+                            aligned = None
 
-                if aligned is None and face_image is not None and face_image.size > 0:
-                    aligned = cv2.resize(face_image, (112, 112), interpolation=cv2.INTER_LINEAR)
+                    if aligned is None and face_image is not None and face_image.size > 0:
+                        aligned = cv2.resize(face_image, (112, 112), interpolation=cv2.INTER_LINEAR)
 
-                if aligned is not None:
-                    feat = self._recognizer.feature(aligned)
-                    if feat is not None:
-                        vec = feat.flatten()
-                        norm = np.linalg.norm(vec)
-                        if norm > 0:
-                            vec = vec / norm
-                        return [round(float(x), 6) for x in vec]
+                    if aligned is not None:
+                        feat = self._recognizer.feature(aligned)
+                        if feat is not None:
+                            vec = feat.flatten()
+                            norm = np.linalg.norm(vec)
+                            if norm > 0:
+                                vec = vec / norm
+                            return [round(float(x), 6) for x in vec]
             except Exception as e:
                 logger.warning(f"SFace feature extraction error: {e}")
                 return None
