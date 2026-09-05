@@ -677,7 +677,7 @@ function CameraWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =
                 <div className="form-row">
                   <div className="form-group" style={{ flex: 2 }}>
                     <label>Camera IP Address</label>
-                    <input type="text" value={ip} onChange={(e) => setIp(e.target.value)} placeholder="192.168.1.108" />
+                    <input type="text" value={ip} onChange={(e) => setIp(e.target.value)} placeholder="192.168.1.108" data-testid="camera-url-input" />
                   </div>
                   <div className="form-group" style={{ flex: 1 }}>
                     <label>RTSP Port</label>
@@ -720,7 +720,7 @@ function CameraWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =
             <div className="test-preview-box">
               <label>Constructed RTSP Video URI:</label>
               <div className="stream-url-display">{streamUrl || 'No URI specified'}</div>
-              <button className="btn btn-primary" onClick={doTest} disabled={testing || !streamUrl}>
+              <button className="btn btn-primary" onClick={doTest} disabled={testing || !streamUrl} data-testid="camera-test-button">
                 {testing ? 'Testing Optical Signal...' : '⚡ Test Optical Connection'}
               </button>
             </div>

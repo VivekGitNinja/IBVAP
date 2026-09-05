@@ -105,6 +105,7 @@ export function EvidenceView({ incidents }: { incidents: Incident[] }) {
                       className={`btn btn-sm ${verified ? 'btn-primary' : 'btn-secondary'}`}
                       onClick={() => verifyItem(e.id)}
                       disabled={verifyingId === e.id}
+                      data-testid="evidence-verify-hash"
                     >
                       {verifyingId === e.id ? 'Checking...' : verified ? '✓ SEAL VALID' : '🔒 Verify Seal'}
                     </button>
@@ -183,6 +184,7 @@ export function EvidenceView({ incidents }: { incidents: Incident[] }) {
                 onClick={() => verifyItem(selectedEvidence.id)}
                 disabled={verifyingId === selectedEvidence.id}
                 style={{ minWidth: 120 }}
+                data-testid="evidence-verify-hash"
               >
                 {verifyingId === selectedEvidence.id ? 'Checking...' : '🔍 Verify Hash'}
               </button>

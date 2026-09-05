@@ -184,14 +184,14 @@ test.describe.serial('IBVAP Real Browser Full Verification Suite', () => {
   test('3.1 Video Studio: Assert Upload Video control exists', async () => {
     await page.goto('http://localhost:5173/?view=media');
     await page.waitForTimeout(1000);
-    const uploadBtn = page.locator('button:has-text("Upload Video"), label:has-text("Upload Video")').first();
+    const uploadBtn = page.getByTestId('upload-button').or(page.locator('button:has-text("Upload Video"), label:has-text("Upload Video")')).first();
     await expect(uploadBtn).toBeVisible();
     await page.screenshot({ path: path.join(EVIDENCE_DIR, '12_video_studio_upload_btn.png') });
     console.log('  [PASS] 3.1 Upload Video control verified. Screenshot: 12_video_studio_upload_btn.png');
   });
 
   test('3.2 Upload samples/vehicle_plate.mp4 via real file input', async () => {
-    const fileInput = page.locator('input[type="file"]').first();
+    const fileInput = page.getByTestId('upload-input').or(page.locator('input[type="file"]')).first();
     const filePath = path.resolve(process.cwd(), 'samples/vehicle_plate.mp4');
 
     await fileInput.setInputFiles(filePath);
@@ -339,7 +339,7 @@ test.describe.serial('IBVAP Real Browser Full Verification Suite', () => {
     const modal = page.locator('.section-65b-modal-backdrop');
     await expect(modal).toBeVisible();
 
-    const canvas = modal.locator('canvas').first();
+    const canvas = modal.getByTestId('zone-canvas').or(modal.locator('canvas')).first();
     await expect(canvas).toBeVisible();
 
     const box = await canvas.boundingBox();
@@ -348,13 +348,13 @@ test.describe.serial('IBVAP Real Browser Full Verification Suite', () => {
       await page.mouse.click(box.x + box.width - 40, box.y + box.height / 2);
     }
 
-    const nameInput = modal.locator('input[placeholder*="Sector 4"]').first();
+    const nameInput = modal.getByTestId('zone-name-input').or(modal.locator('input[placeholder*="Sector 4"]')).first();
     await nameInput.fill('Perimeter Bravo Line');
 
-    const dirSelect = modal.locator('select').first();
+    const dirSelect = modal.getByTestId('zone-direction').or(modal.locator('select')).first();
     await dirSelect.selectOption('either');
 
-    const saveBtn = modal.locator('button:has-text("Save Virtual Fence Zone")').first();
+    const saveBtn = modal.getByTestId('zone-save').or(modal.locator('button:has-text("Save Virtual Fence Zone")')).first();
     await saveBtn.click();
 
     await page.waitForTimeout(1000);
@@ -365,10 +365,10 @@ test.describe.serial('IBVAP Real Browser Full Verification Suite', () => {
 
   test('5.2 Draw POLYGON zone, verify in list, delete and assert gone', async () => {
     const modal = page.locator('.section-65b-modal-backdrop');
-    const polyModeBtn = modal.locator('button:has-text("Perimeter Polygon")').first();
+    const polyModeBtn = modal.getByTestId('zone-type-polygon').or(modal.locator('button:has-text("Perimeter Polygon")')).first();
     await polyModeBtn.click();
 
-    const canvas = modal.locator('canvas').first();
+    const canvas = modal.getByTestId('zone-canvas').or(modal.locator('canvas')).first();
     const box = await canvas.boundingBox();
     if (box) {
       await page.mouse.click(box.x + 180, box.y + 40);
@@ -377,10 +377,10 @@ test.describe.serial('IBVAP Real Browser Full Verification Suite', () => {
       await page.mouse.click(box.x + 180, box.y + 180);
     }
 
-    const nameInput = modal.locator('input[placeholder*="Sector 4"]').first();
+    const nameInput = modal.getByTestId('zone-name-input').or(modal.locator('input[placeholder*="Sector 4"]')).first();
     await nameInput.fill('Buffer Polygon Zone');
 
-    const saveBtn = modal.locator('button:has-text("Save Virtual Fence Zone")').first();
+    const saveBtn = modal.getByTestId('zone-save').or(modal.locator('button:has-text("Save Virtual Fence Zone")')).first();
     await saveBtn.click();
 
     await page.waitForTimeout(1000);
@@ -488,14 +488,14 @@ test.describe.serial('IBVAP Real Browser Full Verification Suite', () => {
     const enrollBtn = page.locator('button:has-text("Enroll Suspect Biometrics")').first();
     await enrollBtn.click();
 
-    const nameInput = page.locator('.section-65b-modal-backdrop input[type="text"]').first();
+    const nameInput = page.getByTestId('frs-enroll-input').or(page.locator('.section-65b-modal-backdrop input[type="text"]')).first();
     await nameInput.fill('Suspect Target Alpha');
 
     const fileInput = page.locator('.section-65b-modal-backdrop input[type="file"]').first();
     const facePath = path.resolve(process.cwd(), 'samples/suspect_portrait.jpg');
     await fileInput.setInputFiles(facePath);
 
-    const submitBtn = page.locator('.section-65b-modal-backdrop button[type="submit"], .section-65b-modal-backdrop button:has-text("Enroll Biometric Target")').first();
+    const submitBtn = page.getByTestId('frs-enroll-submit').or(page.locator('.section-65b-modal-backdrop button[type="submit"], .section-65b-modal-backdrop button:has-text("Enroll Biometric Target")')).first();
     await submitBtn.click();
 
     await page.waitForTimeout(2000);
@@ -506,7 +506,7 @@ test.describe.serial('IBVAP Real Browser Full Verification Suite', () => {
     // Analyze suspect_crossing.mp4
     await page.goto('http://localhost:5173/?view=media');
     await page.waitForTimeout(1000);
-    const mediaInput = page.locator('input[type="file"]').first();
+    const mediaInput = page.getByTestId('upload-input').or(page.locator('input[type="file"]')).first();
     await mediaInput.setInputFiles(path.resolve(process.cwd(), 'samples/suspect_crossing.mp4'));
     await page.waitForTimeout(2500);
 
@@ -588,7 +588,7 @@ test.describe.serial('IBVAP Real Browser Full Verification Suite', () => {
   });
 
   test('7.2 Click Verify Hash -> assert match: true', async () => {
-    const verifyBtn = page.locator('.section-65b-modal-backdrop button:has-text("Verify Hash")').first();
+    const verifyBtn = page.getByTestId('evidence-verify-hash').or(page.locator('.section-65b-modal-backdrop button:has-text("Verify Hash")')).first();
     await verifyBtn.click();
 
     const matchText = page.locator('text=match: true').or(page.locator('text=MATCH')).or(page.locator('text=VALID')).or(page.locator('text=BSA 2023')).first();
@@ -604,7 +604,7 @@ test.describe.serial('IBVAP Real Browser Full Verification Suite', () => {
     await page.goto('http://localhost:5173/?view=media');
     await page.waitForTimeout(1500);
 
-    const pdfBtn = page.locator('a:has-text("Export PDF"), button:has-text("Export PDF")').first();
+    const pdfBtn = page.getByTestId('evidence-export-pdf').or(page.locator('a:has-text("Export PDF"), button:has-text("Export PDF")')).first();
     const downloadPromise = page.waitForEvent('download', { timeout: 15000 });
     await pdfBtn.click();
 
@@ -630,7 +630,7 @@ print("PYPDF_PARSE_SUCCESS")
   });
 
   test('7.4 Export JSON report -> parse and assert non-empty', async () => {
-    const jsonBtn = page.locator('a:has-text("Export JSON"), button:has-text("Export JSON")').first();
+    const jsonBtn = page.getByTestId('evidence-export-json').or(page.locator('a:has-text("Export JSON"), button:has-text("Export JSON")')).first();
     const downloadPromise = page.waitForEvent('download', { timeout: 15000 });
     await jsonBtn.click();
 
@@ -738,13 +738,13 @@ print("PYPDF_PARSE_SUCCESS")
       await page.waitForTimeout(500);
 
       // Step 2: enter invalid IP
-      const ipInput = page.locator('.wizard input[placeholder*="192.168"]').first();
+      const ipInput = page.getByTestId('camera-url-input').or(page.locator('.wizard input[placeholder*="192.168"]')).first();
       await ipInput.fill('10.255.255.1');
       await page.locator('button:has-text("Next Step")').first().click();
       await page.waitForTimeout(500);
 
       // Step 3: test optical connection
-      const testBtn = page.locator('button:has-text("Test Optical Connection")').first();
+      const testBtn = page.getByTestId('camera-test-button').or(page.locator('button:has-text("Test Optical Connection")')).first();
       await testBtn.click();
       await page.waitForTimeout(2500);
 

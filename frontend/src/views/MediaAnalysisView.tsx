@@ -538,12 +538,13 @@ export function MediaAnalysisView() {
           <button className="btn btn-secondary" onClick={refreshData} disabled={loading}>
             {loading ? "Refreshing..." : "🔄 Refresh Studio"}
           </button>
-          <button className="btn btn-primary" onClick={() => fileInputRef.current?.click()}>
+          <button className="btn btn-primary" onClick={() => fileInputRef.current?.click()} data-testid="upload-button">
             ⬆ Upload Video
           </button>
           <input
             type="file"
             ref={fileInputRef}
+            data-testid="upload-input"
             style={{ display: "none" }}
             accept=".mp4,.mov,.avi,.mkv,.webm"
             onChange={(e) => {
@@ -764,6 +765,7 @@ export function MediaAnalysisView() {
                     className="btn btn-sm btn-secondary"
                     target="_blank"
                     rel="noreferrer"
+                    data-testid="evidence-export-json"
                   >
                     📄 Export JSON
                   </a>
@@ -773,6 +775,7 @@ export function MediaAnalysisView() {
                     className="btn btn-sm btn-primary"
                     target="_blank"
                     rel="noreferrer"
+                    data-testid="evidence-export-pdf"
                   >
                     📑 Export PDF (BSA §63)
                   </a>
@@ -798,6 +801,7 @@ export function MediaAnalysisView() {
                   </div>
                   <div style={{ height: 8, background: "rgba(255,255,255,0.08)", borderRadius: 4, overflow: "hidden" }}>
                     <div
+                      data-testid="progress-bar"
                       style={{
                         height: "100%",
                         width: `${Math.min(100, Math.max(0, activeJob.progress_percent || 0))}%`,
@@ -1273,6 +1277,7 @@ export function MediaAnalysisView() {
                   width={560}
                   height={320}
                   onClick={handleCanvasClick}
+                  data-testid="zone-canvas"
                   style={{
                     width: "100%",
                     height: 320,
@@ -1303,6 +1308,7 @@ export function MediaAnalysisView() {
                     value={zoneName}
                     onChange={(e) => setZoneName(e.target.value)}
                     placeholder="e.g. Sector 4 Line Tripwire"
+                    data-testid="zone-name-input"
                     style={{ width: "100%", background: "#040b14", border: "1px solid #333", color: "#fff", padding: 6, borderRadius: 4, marginTop: 2, fontSize: 11 }}
                   />
                 </div>
@@ -1313,6 +1319,7 @@ export function MediaAnalysisView() {
                     <button
                       className={`btn btn-sm ${zoneDrawMode === "line" ? "btn-primary" : "btn-secondary"}`}
                       style={{ flex: 1, fontSize: 10 }}
+                      data-testid="zone-type-line"
                       onClick={() => {
                         setZoneDrawMode("line");
                         setZonePoints([]);
@@ -1323,6 +1330,7 @@ export function MediaAnalysisView() {
                     <button
                       className={`btn btn-sm ${zoneDrawMode === "polygon" ? "btn-primary" : "btn-secondary"}`}
                       style={{ flex: 1, fontSize: 10 }}
+                      data-testid="zone-type-polygon"
                       onClick={() => {
                         setZoneDrawMode("polygon");
                         setZonePoints([]);
@@ -1339,6 +1347,7 @@ export function MediaAnalysisView() {
                     <select
                       value={zoneDirection}
                       onChange={(e) => setZoneDirection(e.target.value)}
+                      data-testid="zone-direction"
                       style={{ width: "100%", background: "#040b14", border: "1px solid #333", color: "#fff", padding: 6, borderRadius: 4, marginTop: 2, fontSize: 11 }}
                     >
                       <option value="either">Bidirectional (Either Direction)</option>
@@ -1375,7 +1384,7 @@ export function MediaAnalysisView() {
                   />
                 </div>
 
-                <button className="btn btn-primary" onClick={handleSaveZone} style={{ marginTop: 6 }}>
+                <button className="btn btn-primary" onClick={handleSaveZone} style={{ marginTop: 6 }} data-testid="zone-save">
                   💾 Save Virtual Fence Zone
                 </button>
               </div>
@@ -1528,7 +1537,7 @@ export function MediaAnalysisView() {
                 <button className="btn btn-secondary" onClick={() => setSelectedAssetForJob(null)}>
                   Cancel
                 </button>
-                <button className="btn btn-primary" onClick={handleLaunchAnalysis}>
+                <button className="btn btn-primary" onClick={handleLaunchAnalysis} data-testid="analyze-button">
                   🚀 Launch Pipeline Job
                 </button>
               </div>

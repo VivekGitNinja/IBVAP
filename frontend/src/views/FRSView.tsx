@@ -335,6 +335,7 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="e.g. Tariq Mehmood"
+                  data-testid="frs-enroll-input"
                   style={{ width: "100%", background: "#040b14", border: "1px solid #333", color: "#fff", padding: 8, borderRadius: 4, marginTop: 4 }}
                   required
                 />
@@ -363,7 +364,7 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
                 <button className="btn btn-secondary" type="button" onClick={() => setShowEnroll(false)}>
                   Cancel
                 </button>
-                <button className="btn btn-primary" type="submit">
+                <button className="btn btn-primary" type="submit" data-testid="frs-enroll-submit">
                   + Enroll Biometric Target
                 </button>
               </div>
