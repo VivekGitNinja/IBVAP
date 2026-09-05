@@ -205,6 +205,62 @@ curl -X POST http://localhost:8001/api/v1/jobs \
 
 ---
 
+## 7.1 Live RTSP Streaming & Loopback Demo
+
+IBVAP integrates live edge video streams using high-performance OpenCV/FFmpeg TCP capture and binary WebSocket streaming (`/ws/live/{camera_id}`) directly to the Tactical HUD.
+
+### A. Real RTSP Server Loop (MediaMTX / ffmpeg)
+When an external RTSP server like `mediamtx` (formerly `rtsp-simple-server`) is available:
+```bash
+# 1. Start mediamtx server on default RTSP port 8554
+mediamtx
+
+# 2. In another terminal, stream a continuous sample video loop to the RTSP server:
+ffmpeg -re -stream_loop -1 -i samples/vehicle_plate.mp4 -c copy -f rtsp rtsp://localhost:8554/live/bop1
+
+# 3. Register the camera via API or the Deploy Camera Wizard in the Live Monitor:
+curl -X POST http://localhost:8001/api/v1/cameras \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -d '{
+    "name": "BOP-01 Sector Alpha Optical Feed",
+    "location": "Sector Alpha Gate",
+    "bop": "BOP-01",
+    "camera_type": "RTSP",
+    "stream_url": "rtsp://localhost:8554/live/bop1",
+    "fps": 15
+  }'
+```
+
+### B. Air-Gapped / Single-Host Evaluation Fallback (Loopback Stream)
+If `mediamtx` is not installed on the evaluation machine, IBVAP provides an identical-code-path loopback stream using the `file://` scheme or local HTTP bridge:
+```bash
+# Register camera pointing to local surveillance fixture (exercises identical OpenCV decode & live pipeline)
+curl -X POST http://localhost:8001/api/v1/cameras \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -d '{
+    "name": "BOP-01 Sector Alpha Tactical RTSP",
+    "location": "Sector Alpha Gate 1",
+    "bop": "BOP-01",
+    "camera_type": "RTSP",
+    "stream_url": "file:///path/to/ibvap/samples/vehicle_plate.mp4",
+    "fps": 15
+  }'
+```
+
+### C. Automated RTSP Verification Script
+Run the automated verification script to provision the camera, verify status `ONLINE` in UI, stream frames, execute live CV analysis, and generate forensic screenshots:
+```bash
+node scripts/verify_rtsp_demo.mjs
+```
+Expected output:
+- `data/evidence/53_rtsp_camera_online.png` (Live Monitor grid shows camera status ONLINE)
+- `data/evidence/54_rtsp_live_detections.png` (Live stream CV analysis active with detections)
+
+
+---
+
 ## 8. Offline Operation Proof
 
 IBVAP is **fully air-gapped** after model pre-caching:

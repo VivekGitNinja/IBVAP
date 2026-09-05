@@ -462,7 +462,7 @@ def main():
                 },
             )
             e_job_id = e_job_resp.json().get("id")
-            for _ in range(40):
+            for _ in range(90):
                 ej_st = client.get(f"/api/v1/analysis/jobs/{e_job_id}", headers=headers).json().get("status")
                 if ej_st in ("completed", "failed"):
                     break
