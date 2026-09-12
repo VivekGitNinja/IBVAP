@@ -78,6 +78,40 @@ function App() {
     [store.incidents]
   );
 
+  const handleLaunchMission = async (key: string) => {
+    playTacticalTone('verify');
+    if (key === 'checkpost') {
+      store.setPage('anpr');
+      store.addToast({
+        title: 'MISSION: CHECKPOST INTERCEPT ENGAGED',
+        subtitle: 'Indian HSRP Neural ANPR pipeline engaged with barrier lockout',
+        severity: 'HIGH',
+      });
+    } else if (key === 'night_breach') {
+      store.setPage('cameras');
+      await store.runDemoScenario('intrusion');
+      store.addToast({
+        title: 'MISSION: NIGHT BREACH DETECTED',
+        subtitle: 'Zero-DCE++ low-light perception & virtual fence breach triggered',
+        severity: 'CRITICAL',
+      });
+    } else if (key === 'mac_sentry') {
+      store.setPage('cameras');
+      store.addToast({
+        title: 'MISSION: HARDWARE SENTRY NODE ENGAGED',
+        subtitle: 'Live local Mac hardware camera feed active with biometric perception',
+        severity: 'LOW',
+      });
+    } else if (key === 'drone_recon') {
+      store.setPage('thermal');
+      store.addToast({
+        title: 'MISSION: EO/IR THERMAL DRONE PATROL ACTIVE',
+        subtitle: 'Multi-spectral thermal aerial scan calibrated for zero-line boundary',
+        severity: 'MEDIUM',
+      });
+    }
+  };
+
   return (
     <div className="app">
       <Sidebar
@@ -103,6 +137,7 @@ function App() {
           onOpenLogin={() => store.setShowLoginModal(true)}
           onTogglePatrol={() => setIsPatrolActive((prev) => !prev)}
           isPatrolActive={isPatrolActive}
+          onLaunchMission={handleLaunchMission}
         />
 
         {!store.status && (

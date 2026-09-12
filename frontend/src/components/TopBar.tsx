@@ -17,6 +17,7 @@ interface TopBarProps {
   onOpenLogin?: () => void;
   onTogglePatrol?: () => void;
   isPatrolActive?: boolean;
+  onLaunchMission?: (missionKey: string) => void;
 }
 
 export function TopBar({
@@ -32,9 +33,11 @@ export function TopBar({
   onOpenLogin,
   onTogglePatrol,
   isPatrolActive,
+  onLaunchMission,
 }: TopBarProps) {
   const [clock, setClock] = useState(new Date());
   const [copiedLink, setCopiedLink] = useState(false);
+  const [showMissions, setShowMissions] = useState(false);
 
   useEffect(() => {
     const t = setInterval(() => setClock(new Date()), 1000);
@@ -146,6 +149,141 @@ export function TopBar({
           <span className="test-alert-dot" />
           <span>TEST</span>
         </button>
+
+        {/* 1-Click Tactical Missions Launcher */}
+        <div style={{ position: 'relative' }}>
+          <button
+            className="btn-tactical-icon"
+            onClick={() => {
+              playTacticalTone('click');
+              setShowMissions((prev) => !prev);
+            }}
+            title="1-Click Tactical Surveillance Mission Presets"
+            style={{
+              width: 'auto',
+              padding: '0 10px',
+              gap: 5,
+              borderColor: '#00f0ff',
+              color: '#00f0ff',
+              background: showMissions ? 'rgba(0, 240, 255, 0.25)' : 'rgba(0, 240, 255, 0.08)',
+              fontWeight: 700,
+            }}
+          >
+            <span>🚀</span>
+            <span style={{ fontSize: 10, letterSpacing: 0.5 }}>MISSIONS ▾</span>
+          </button>
+
+          {showMissions && (
+            <div
+              style={{
+                position: 'absolute',
+                top: '125%',
+                right: 0,
+                width: 300,
+                background: '#040b16',
+                border: '1px solid #00f0ff',
+                borderRadius: 6,
+                boxShadow: '0 8px 32px rgba(0, 240, 255, 0.4)',
+                zIndex: 1000,
+                overflow: 'hidden',
+                padding: '4px 0',
+              }}
+            >
+              <div
+                style={{
+                  padding: '6px 12px 8px 12px',
+                  borderBottom: '1px solid rgba(0, 240, 255, 0.2)',
+                  fontSize: 10,
+                  fontWeight: 800,
+                  color: '#00f0ff',
+                  letterSpacing: 1,
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <span>TACTICAL MISSION PRESETS</span>
+                <span style={{ color: '#00ff9d' }}>1-CLICK DEPLOY</span>
+              </div>
+
+              {[
+                {
+                  key: 'checkpost',
+                  icon: '🚗',
+                  title: 'Checkpost ANPR Intercept',
+                  desc: 'HSRP neural plate scan with automated barrier lockout',
+                  badge: 'ANPR',
+                  badgeColor: '#00f0ff',
+                },
+                {
+                  key: 'night_breach',
+                  icon: '🌙',
+                  title: 'Night Border Breach',
+                  desc: 'Zero-DCE++ low-light scan & restricted perimeter tripwire',
+                  badge: 'CRITICAL',
+                  badgeColor: '#ff2a55',
+                },
+                {
+                  key: 'mac_sentry',
+                  icon: '🎯',
+                  title: 'Mac Sentry Hardware Node',
+                  desc: 'Live FaceTime HD camera with YuNet+SFace biometrics',
+                  badge: 'LIVE HW',
+                  badgeColor: '#00ff9d',
+                },
+                {
+                  key: 'drone_recon',
+                  icon: '🚁',
+                  title: 'EO/IR Drone Perimeter Recon',
+                  desc: 'Multi-spectral thermal border sweep along zero-line',
+                  badge: 'THERMAL',
+                  badgeColor: '#ffaa00',
+                },
+              ].map((m) => (
+                <div
+                  key={m.key}
+                  onClick={() => {
+                    playTacticalTone('verify');
+                    setShowMissions(false);
+                    onLaunchMission?.(m.key);
+                  }}
+                  style={{
+                    padding: '9px 12px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 10,
+                    borderBottom: '1px solid rgba(255,255,255,0.06)',
+                    transition: 'background 0.15s ease',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(0, 240, 255, 0.14)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <span style={{ fontSize: 18, lineHeight: 1.2 }}>{m.icon}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <b style={{ fontSize: 11, color: '#fff' }}>{m.title}</b>
+                      <span
+                        style={{
+                          fontSize: 9,
+                          fontWeight: 800,
+                          padding: '1px 5px',
+                          borderRadius: 3,
+                          border: `1px solid ${m.badgeColor}`,
+                          color: m.badgeColor,
+                        }}
+                      >
+                        {m.badge}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 2, lineHeight: 1.3 }}>
+                      {m.desc}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* Copy Share Link Button (Task 5.2) */}
         <button

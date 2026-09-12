@@ -42,6 +42,35 @@ export function MediaAnalysisView() {
   const [sensorSkin, setSensorSkin] = useState<"raw" | "nvg" | "flir">("raw");
   const videoPlayerRef = useRef<HTMLVideoElement | null>(null);
   const trailCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const animFrameIdRef = useRef<number | null>(null);
+
+  const startPlaybackSync = () => {
+    if (animFrameIdRef.current) cancelAnimationFrame(animFrameIdRef.current);
+    const renderLoop = () => {
+      const vid = videoPlayerRef.current;
+      if (vid && !vid.paused && !vid.ended) {
+        drawTrailsOnCanvas(vid.currentTime);
+        animFrameIdRef.current = requestAnimationFrame(renderLoop);
+      }
+    };
+    animFrameIdRef.current = requestAnimationFrame(renderLoop);
+  };
+
+  const stopPlaybackSync = () => {
+    if (animFrameIdRef.current) {
+      cancelAnimationFrame(animFrameIdRef.current);
+      animFrameIdRef.current = null;
+    }
+    if (videoPlayerRef.current) {
+      drawTrailsOnCanvas(videoPlayerRef.current.currentTime);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (animFrameIdRef.current) cancelAnimationFrame(animFrameIdRef.current);
+    };
+  }, []);
 
   // Evidence verification state
   const [evidenceVerifyStatus, setEvidenceVerifyStatus] = useState<Record<number, any>>({});
@@ -296,11 +325,11 @@ export function MediaAnalysisView() {
       const vWidth = video.videoWidth || canvas.width || 640;
       const vHeight = video.videoHeight || canvas.height || 360;
 
-      // Filter detections belonging to current frame (within +/- 1 frame window)
+      // Filter detections belonging to current frame (within +/- 2 frame window for seamless multi-stride playback)
       const frameDets = allDets.filter((d: any) => {
         const fIdx = d.frame ?? d.frame_index ?? 0;
         if (selectedTrackId && String(d.track_id) !== String(selectedTrackId)) return false;
-        return Math.abs(fIdx - currentFrame) <= 1;
+        return Math.abs(fIdx - currentFrame) <= 2;
       });
 
       frameDets.forEach((det: any) => {
@@ -953,36 +982,39 @@ export function MediaAnalysisView() {
                   >
                     <div style={{ position: "relative", background: "#000", minHeight: 260, display: "flex", justifyContent: "center", alignItems: "center", overflow: "hidden" }}>
                       {(activeJob.source_type === "upload" || activeJob.source_type === "media") && (activeJob.source_id || activeJob.id) ? (
-                        <video
-                          ref={videoPlayerRef}
-                          controls
-                          src={`/api/v1/media/${activeJob.source_id || activeJob.id}/stream`}
-                          className={sensorSkin === "nvg" ? "tactical-sensor-skin-nvg" : sensorSkin === "flir" ? "tactical-sensor-skin-flir" : ""}
-                          onTimeUpdate={(e) => drawTrailsOnCanvas(e.currentTarget.currentTime)}
-                          onLoadedMetadata={() => drawTrailsOnCanvas(videoPlayerRef.current?.currentTime || 0)}
-                          onPlay={() => drawTrailsOnCanvas(videoPlayerRef.current?.currentTime || 0)}
-                          onSeeked={() => drawTrailsOnCanvas(videoPlayerRef.current?.currentTime || 0)}
-                          style={{ width: "100%", maxHeight: 360, display: "block" }}
-                        />
+                        <div style={{ position: "relative", display: "inline-block", maxWidth: "100%", lineHeight: 0 }}>
+                          <video
+                            ref={videoPlayerRef}
+                            controls
+                            src={`/api/v1/media/${activeJob.source_id || activeJob.id}/stream`}
+                            className={sensorSkin === "nvg" ? "tactical-sensor-skin-nvg" : sensorSkin === "flir" ? "tactical-sensor-skin-flir" : ""}
+                            onTimeUpdate={(e) => drawTrailsOnCanvas(e.currentTarget.currentTime)}
+                            onLoadedMetadata={() => drawTrailsOnCanvas(videoPlayerRef.current?.currentTime || 0)}
+                            onPlay={startPlaybackSync}
+                            onPause={stopPlaybackSync}
+                            onEnded={stopPlaybackSync}
+                            onSeeked={() => drawTrailsOnCanvas(videoPlayerRef.current?.currentTime || 0)}
+                            style={{ width: "100%", maxHeight: 360, display: "block" }}
+                          />
+                          {/* Canvas Overlay for Track Trails & Bounding Boxes (60fps animation sync) */}
+                          <canvas
+                            ref={trailCanvasRef}
+                            style={{
+                              position: "absolute",
+                              top: 0,
+                              left: 0,
+                              width: "100%",
+                              height: "100%",
+                              pointerEvents: "none",
+                              zIndex: 4,
+                            }}
+                          />
+                        </div>
                       ) : (
                         <div style={{ color: "var(--text-ghost)", padding: 30, fontSize: 12 }}>
                           Footage stream ready. Analysis evaluated {activeJob.processed_frames} frames.
                         </div>
                       )}
-
-                      {/* Canvas Overlay for Track Trails (Task 2.2) */}
-                      <canvas
-                        ref={trailCanvasRef}
-                        style={{
-                          position: "absolute",
-                          top: 0,
-                          left: 0,
-                          width: "100%",
-                          height: "100%",
-                          pointerEvents: "none",
-                          zIndex: 4,
-                        }}
-                      />
 
                       {/* Sensor Skin Disclaimer Banner (Task 7.1) */}
                       {ENABLE_SENSOR_SKINS && sensorSkin !== "raw" && (

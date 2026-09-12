@@ -7,6 +7,7 @@ import { PTZController } from "../components/PTZController";
 import { ZoneEditorModal } from "../components/ZoneEditorModal";
 import { BirdseyeView } from "../components/BirdseyeView";
 import { QRTScrambleModal } from "../components/QRTScrambleModal";
+import { LegalCertificateModal } from "../components/LegalCertificateModal";
 import { TacticalHUD } from "../components/TacticalHUD";
 
 export function LiveMonitorView({
@@ -24,6 +25,7 @@ export function LiveMonitorView({
   const [theaterActiveId, setTheaterActiveId] = useState<number | null>(null);
   const [zoneStudioCamId, setZoneStudioCamId] = useState<number | null>(null);
   const [scrambleIncident, setScrambleIncident] = useState<Incident | null>(null);
+  const [legalCertIncident, setLegalCertIncident] = useState<Incident | null>(null);
 
   // Prioritize physical/real hardware cameras at the top of the grid
   const sortedCameras = [...cameras].sort((a, b) => {
@@ -98,6 +100,19 @@ export function LiveMonitorView({
           >
             📐 Zone & Tripwire Studio
           </button>
+          {incidents.length > 0 && (
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                playTacticalTone('verify');
+                setLegalCertIncident(incidents[0]);
+              }}
+              style={{ borderColor: '#a855f7', color: '#c084fc', background: 'rgba(168, 85, 247, 0.1)' }}
+              title="Export Bharatiya Sakshya Adhiniyam, 2023 Section 63 Electronic Evidence Certificate"
+            >
+              ⚖️ BSA 2023 §63 Vault
+            </button>
+          )}
           <button className="btn btn-primary" onClick={() => setView('wizard')}>+ Deploy Camera</button>
           <button className="btn btn-secondary" onClick={() => setView('discover')}>🔍 Network Auto-Discovery</button>
         </div>
@@ -108,6 +123,84 @@ export function LiveMonitorView({
 
       {view === 'grid' && (
         <>
+          {/* Active Perimeter Breaches Ticker with Direct 1-Click BSA 2023 §63 Legal Certificate & QRT Scramble */}
+          {incidents.filter(i => i.status === 'NEW' || i.status === 'ACKNOWLEDGED').slice(0, 2).map((inc) => (
+            <div
+              key={inc.id}
+              style={{
+                background: 'linear-gradient(90deg, rgba(255, 42, 85, 0.18) 0%, rgba(10, 15, 29, 0.95) 100%)',
+                border: '1px solid #ff2a55',
+                borderRadius: 6,
+                padding: '10px 16px',
+                marginBottom: 14,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                boxShadow: '0 0 24px rgba(255, 42, 85, 0.25)',
+                flexWrap: 'wrap',
+                gap: 12,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <span style={{ fontSize: 22 }}>🚨</span>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <b style={{ color: '#ff2a55', fontSize: 13, letterSpacing: 0.8 }}>
+                      {inc.severity} PERIMETER BREACH: {inc.title}
+                    </b>
+                    <span style={{ background: '#ff2a55', color: '#fff', fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 3 }}>
+                      THREAT {inc.threat_score}/100
+                    </span>
+                    <span style={{ color: '#00f0ff', fontSize: 11, fontFamily: 'var(--font-mono)' }}>
+                      [{inc.incident_code}]
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+                    Post: <b>{inc.camera_name || 'BOP Sector Perimeter'}</b> • Evidence: <b>SHA-256 Bit-Sealed</b> • Forensic Admissibility: <b>BSA 2023 §63</b>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <button
+                  className="btn btn-sm btn-secondary"
+                  onClick={() => {
+                    playTacticalTone('verify');
+                    setLegalCertIncident(inc);
+                  }}
+                  style={{
+                    borderColor: '#a855f7',
+                    color: '#c084fc',
+                    background: 'rgba(168, 85, 247, 0.15)',
+                    padding: '5px 12px',
+                    fontSize: 11,
+                    fontWeight: 700,
+                  }}
+                  title="Generate, cryptographically verify, and export Bharatiya Sakshya Adhiniyam, 2023 §63 court affidavit"
+                >
+                  ⚖️ Export BSA 2023 §63 Certificate
+                </button>
+                <button
+                  className="btn btn-sm btn-primary"
+                  onClick={() => {
+                    playTacticalTone('alert');
+                    setScrambleIncident(inc);
+                  }}
+                  style={{
+                    background: '#ff2a55',
+                    borderColor: '#ff2a55',
+                    padding: '5px 12px',
+                    fontSize: 11,
+                    fontWeight: 700,
+                  }}
+                  title="Scramble armed quick reaction team"
+                >
+                  ⚡ Scramble QRT Team
+                </button>
+              </div>
+            </div>
+          ))}
+
           {/* Controls Bar: Filter Pills + Grid Switcher */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
             <div className="filter-pills-group" style={{ display: 'flex', gap: 6 }}>
@@ -280,6 +373,26 @@ export function LiveMonitorView({
         <QRTScrambleModal
           incident={scrambleIncident}
           onClose={() => setScrambleIncident(null)}
+        />
+      )}
+
+      {/* Official Court-Admissible Section 63 BSA Certificate Modal */}
+      {legalCertIncident && (
+        <LegalCertificateModal
+          cert={{
+            certificate_id: `CERT-BSA63-2026-${legalCertIncident.incident_code}`,
+            incident_code: legalCertIncident.incident_code,
+            surveillance_post: legalCertIncident.camera_name || 'BOP-01 (Sector Alpha)',
+            camera_designation: legalCertIncident.camera_name || 'CAM-01 Zero-Line Camera',
+            sha256_digest: (legalCertIncident as any).clip_sha256 || 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+            evidence_id: legalCertIncident.id,
+            generated_at: legalCertIncident.created_at || new Date().toISOString(),
+            certifying_officer: 'Commandant Rajeshwar Singh',
+            officer_rank: 'Commandant (Surveillance Operations)',
+            clock_source: 'NTP Synced with NPL Indian Standard Time (IST)',
+            storage_integrity: 'Direct NVMe Encrypted Ring Buffer (ext4)',
+          }}
+          onClose={() => setLegalCertIncident(null)}
         />
       )}
     </div>

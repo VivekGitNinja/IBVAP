@@ -18,12 +18,79 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
   const [name, setName] = useState("");
   const [notes, setNotes] = useState("");
   const [enrollFile, setEnrollFile] = useState<File | null>(null);
+  const [enrollPreviewUrl, setEnrollPreviewUrl] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [probeFile, setProbeFile] = useState<File | null>(null);
   const [probePreviewUrl, setProbePreviewUrl] = useState<string | null>(null);
   const [isVerifyingProbe, setIsVerifyingProbe] = useState(false);
   const [probeResult, setProbeResult] = useState<any>(null);
   const [selectedMatch, setSelectedMatch] = useState<any | null>(null);
+
+  // Live Webcam Snapshot Capture State
+  const [webcamMode, setWebcamMode] = useState<'none' | 'enroll' | 'probe'>('none');
+  const webcamVideoRef = useRef<HTMLVideoElement | null>(null);
+  const webcamStreamRef = useRef<MediaStream | null>(null);
+
+  const startWebcam = async (target: 'enroll' | 'probe') => {
+    try {
+      playTacticalTone('click');
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+        audio: false,
+      });
+      webcamStreamRef.current = stream;
+      setWebcamMode(target);
+      setTimeout(() => {
+        if (webcamVideoRef.current) {
+          webcamVideoRef.current.srcObject = stream;
+          webcamVideoRef.current.play().catch(() => {});
+        }
+      }, 100);
+    } catch (err: any) {
+      alert("Webcam capture error or permission denied: " + err.message);
+    }
+  };
+
+  const stopWebcam = () => {
+    if (webcamStreamRef.current) {
+      webcamStreamRef.current.getTracks().forEach((track) => track.stop());
+      webcamStreamRef.current = null;
+    }
+    setWebcamMode('none');
+  };
+
+  const captureWebcamFrame = (target: 'enroll' | 'probe') => {
+    if (!webcamVideoRef.current) return;
+    const video = webcamVideoRef.current;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const file = new File([blob], `webcam_face_${Date.now()}.jpg`, { type: 'image/jpeg' });
+      if (target === 'enroll') {
+        setEnrollFile(file);
+        setEnrollPreviewUrl(URL.createObjectURL(blob));
+      } else {
+        setProbeFile(file);
+        setProbePreviewUrl(URL.createObjectURL(blob));
+      }
+      stopWebcam();
+      playTacticalTone('verify');
+    }, 'image/jpeg', 0.95);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (webcamStreamRef.current) {
+        webcamStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, []);
 
   const handleVerifyProbe = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -93,15 +160,17 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
     e.preventDefault();
     if (!name.trim()) return;
     if (!enrollFile) {
-      alert("Please select a face image file for biometric enrollment.");
+      alert("Please select or capture a face image for biometric enrollment.");
       return;
     }
+    stopWebcam();
     try {
       await api.enrollWatchlist(name, notes, enrollFile);
       setShowEnroll(false);
       setName("");
       setNotes("");
       setEnrollFile(null);
+      setEnrollPreviewUrl(null);
       playTacticalTone("verify");
       setFeedback(`✓ Suspect ${name} successfully enrolled into biometric watchlist.`);
       loadData();
@@ -226,17 +295,57 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
             </div>
             <form onSubmit={handleVerifyProbe} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <div>
-                <label style={{ fontSize: 11, color: "var(--text-secondary)" }}>Upload suspect face photo:</label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0] || null;
-                    setProbeFile(f);
-                    if (f) setProbePreviewUrl(URL.createObjectURL(f));
-                  }}
-                  style={{ width: "100%", marginTop: 4, fontSize: 12, color: "#fff" }}
-                />
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <label style={{ fontSize: 11, color: "var(--text-secondary)" }}>Suspect face source:</label>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    style={{ padding: "2px 8px", fontSize: 10, borderColor: "#00f0ff", color: "#00f0ff" }}
+                    onClick={() => {
+                      if (webcamMode === "probe") stopWebcam();
+                      else startWebcam("probe");
+                    }}
+                  >
+                    {webcamMode === "probe" ? "✕ Close Camera" : "📸 Use Live Webcam"}
+                  </button>
+                </div>
+
+                {webcamMode === "probe" ? (
+                  <div style={{ position: "relative", borderRadius: 6, overflow: "hidden", background: "#000", border: "1px solid #00f0ff" }}>
+                    <video ref={webcamVideoRef} autoPlay playsInline muted style={{ width: "100%", height: 180, objectFit: "cover" }} />
+                    <div style={{ position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,0.7)", padding: "2px 6px", borderRadius: 4, fontSize: 10, color: "#00ff9d" }}>
+                      ● LIVE WEBCAM
+                    </div>
+                    <div style={{ position: "absolute", bottom: 8, left: "50%", transform: "translateX(-50%)" }}>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        style={{ boxShadow: "0 0 12px rgba(0, 240, 255, 0.6)" }}
+                        onClick={() => captureWebcamFrame("probe")}
+                      >
+                        📸 Snap Probe Photo
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0] || null;
+                      setProbeFile(f);
+                      if (f) setProbePreviewUrl(URL.createObjectURL(f));
+                    }}
+                    style={{ width: "100%", marginTop: 4, fontSize: 12, color: "#fff" }}
+                  />
+                )}
+
+                {probePreviewUrl && (
+                  <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8, background: "rgba(0,0,0,0.3)", padding: 6, borderRadius: 4 }}>
+                    <img src={probePreviewUrl} alt="Probe Preview" style={{ width: 42, height: 42, objectFit: "cover", borderRadius: 4, border: "1px solid #00f0ff" }} />
+                    <div style={{ fontSize: 11, color: "#94a3b8" }}>Probe image loaded & ready for SFace 128D extraction</div>
+                  </div>
+                )}
               </div>
               <button className="btn btn-primary btn-sm" type="submit" disabled={isVerifyingProbe || !probeFile}>
                 {isVerifyingProbe ? "Computing Embedding & Matching..." : "⚡ Verify Probe Against Watchlist"}
@@ -432,7 +541,7 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
 
       {/* Enroll Suspect Modal */}
       {showEnroll && (
-        <div className="section-65b-modal-backdrop" onClick={() => setShowEnroll(false)}>
+        <div className="section-65b-modal-backdrop" onClick={() => { stopWebcam(); setShowEnroll(false); }}>
           <div className="panel" style={{ maxWidth: 480, width: "100%", margin: 0, padding: 24 }} onClick={(e) => e.stopPropagation()}>
             <h3 style={{ color: "#00f0ff", marginBottom: 14 }}>Enroll Subject into Biometric Watchlist</h3>
             <form onSubmit={handleEnroll} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -459,20 +568,63 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
                 />
               </div>
               <div>
-                <label style={{ fontSize: 11, color: "var(--text-secondary)" }}>Face Photo (JPG / PNG):</label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => setEnrollFile(e.target.files?.[0] || null)}
-                  style={{ width: "100%", background: "#040b14", border: "1px solid #333", color: "#fff", padding: 8, borderRadius: 4, marginTop: 4 }}
-                  required
-                />
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <label style={{ fontSize: 11, color: "var(--text-secondary)" }}>Face Photo (JPG / PNG):</label>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    style={{ padding: "2px 8px", fontSize: 10, borderColor: "#00f0ff", color: "#00f0ff" }}
+                    onClick={() => {
+                      if (webcamMode === "enroll") stopWebcam();
+                      else startWebcam("enroll");
+                    }}
+                  >
+                    {webcamMode === "enroll" ? "✕ Close Camera" : "📸 Capture from Webcam"}
+                  </button>
+                </div>
+
+                {webcamMode === "enroll" ? (
+                  <div style={{ position: "relative", borderRadius: 6, overflow: "hidden", background: "#000", border: "1px solid #00f0ff", marginBottom: 8 }}>
+                    <video ref={webcamVideoRef} autoPlay playsInline muted style={{ width: "100%", height: 200, objectFit: "cover" }} />
+                    <div style={{ position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,0.7)", padding: "2px 6px", borderRadius: 4, fontSize: 10, color: "#00ff9d" }}>
+                      ● LIVE WEBCAM
+                    </div>
+                    <div style={{ position: "absolute", bottom: 8, left: "50%", transform: "translateX(-50%)" }}>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        style={{ boxShadow: "0 0 12px rgba(0, 240, 255, 0.6)" }}
+                        onClick={() => captureWebcamFrame("enroll")}
+                      >
+                        📸 Snap & Use Photo
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0] || null;
+                      setEnrollFile(f);
+                      if (f) setEnrollPreviewUrl(URL.createObjectURL(f));
+                    }}
+                    style={{ width: "100%", background: "#040b14", border: "1px solid #333", color: "#fff", padding: 8, borderRadius: 4 }}
+                  />
+                )}
+
+                {enrollPreviewUrl && (
+                  <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8, background: "rgba(0,0,0,0.3)", padding: 6, borderRadius: 4 }}>
+                    <img src={enrollPreviewUrl} alt="Enroll Preview" style={{ width: 42, height: 42, objectFit: "cover", borderRadius: 4, border: "1px solid #00f0ff" }} />
+                    <div style={{ fontSize: 11, color: "#94a3b8" }}>Photo selected: {enrollFile?.name || "Webcam snapshot"} (Ready for SFace 128D embedding)</div>
+                  </div>
+                )}
               </div>
               <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
-                <button className="btn btn-secondary" type="button" onClick={() => setShowEnroll(false)}>
+                <button className="btn btn-secondary" type="button" onClick={() => { stopWebcam(); setShowEnroll(false); }}>
                   Cancel
                 </button>
-                <button className="btn btn-primary" type="submit" data-testid="frs-enroll-submit">
+                <button className="btn btn-primary" type="submit" data-testid="frs-enroll-submit" disabled={!enrollFile || !name.trim()}>
                   + Enroll Biometric Target
                 </button>
               </div>
