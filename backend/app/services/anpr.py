@@ -25,6 +25,21 @@ def normalize_indian_plate(text: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9]", "", text).upper()
     cleaned = re.sub(r"IND", "", cleaned)
 
+    # Common state prefix misreads
+    if cleaned.startswith(("0L", "OL", "QL")):
+        cleaned = "DL" + cleaned[2:]
+    elif cleaned.startswith(("1K", "IK")):
+        cleaned = "JK" + cleaned[2:]
+    elif cleaned.startswith(("0P", "OP")):
+        cleaned = "UP" + cleaned[2:]
+    elif cleaned.startswith(("HB", "H8")):
+        cleaned = "HR" + cleaned[2:]
+
+    # Remove extra O/0 between state and RTO (e.g. DLO01AB1234 -> DL01AB1234)
+    m_extra = re.match(r"^([A-Z]{2})[O0]+(\d{2}[A-Z]{1,3}\d{4})$", cleaned)
+    if m_extra:
+        cleaned = m_extra.group(1) + m_extra.group(2)
+
     char_to_num = {'O': '0', 'Q': '0', 'D': '0', 'I': '1', 'L': '1', 'Z': '2', 'S': '5', 'B': '8', 'G': '6'}
     num_to_char = {'0': 'O', '1': 'I', '2': 'Z', '5': 'S', '8': 'B'}
 
@@ -65,7 +80,7 @@ def match_watchlist_plate(text: str) -> Optional[Tuple[str, float]]:
 
 
 class ANPREngine:
-    """Production-grade ANPR engine with graceful degradation."""
+    """Production-grade ANPR engine with dedicated neural plate localization and OCR."""
 
     def __init__(self, plate_model_path: Optional[str] = None):
         self.plate_model_path = plate_model_path or "models/plate_detect.onnx"
@@ -73,6 +88,34 @@ class ANPREngine:
         self._ocr_backend: Optional[str] = None
         self._ocr_engine: Any = None
         self._unavailable_reason: Optional[str] = None
+        self._plate_detector = None
+        self._plate_detector_checked = False
+
+    def get_plate_detector(self) -> Any:
+        """Load and cache dedicated neural license plate detection model."""
+        if self._plate_detector_checked:
+            return self._plate_detector
+        self._plate_detector_checked = True
+        try:
+            target_path = None
+            if self.plate_model_path and os.path.exists(self.plate_model_path):
+                target_path = self.plate_model_path
+            elif os.path.exists("models/plate_detect.onnx"):
+                target_path = "models/plate_detect.onnx"
+            elif os.path.exists("models/plate_detect.pt"):
+                target_path = "models/plate_detect.pt"
+
+            if target_path:
+                from ultralytics import YOLO
+                task = "detect" if target_path.endswith(".onnx") else None
+                if task:
+                    self._plate_detector = YOLO(target_path, task=task)
+                else:
+                    self._plate_detector = YOLO(target_path)
+                logger.info(f"ANPR neural plate detector loaded from {target_path}")
+        except Exception as e:
+            logger.warning(f"Could not initialize neural plate detector: {e}")
+        return self._plate_detector
 
     def check_ocr_availability(self) -> Tuple[bool, str]:
         """Check if PaddleOCR or pytesseract is installed and usable."""
@@ -114,16 +157,38 @@ class ANPREngine:
         return False, self._unavailable_reason
 
     def localize_plate(self, vehicle_crop: np.ndarray) -> Tuple[np.ndarray, Optional[Dict[str, float]]]:
-        """Localize plate within a vehicle image crop.
-        
-        Uses morphological filtering and contour analysis (aspect ratio 2.0 - 5.5).
-        Returns cropped plate image and relative bounding box [x1, y1, x2, y2].
-        """
+        """Localize plate within a vehicle image crop using neural detector with contour fallback."""
         vh, vw = vehicle_crop.shape[:2]
         if vh < 20 or vw < 40:
             return vehicle_crop, None
 
-        # Check lower half of vehicle where plates are mounted
+        # 1. Primary: Dedicated neural plate detection model (YOLOv11 ONNX)
+        detector = self.get_plate_detector()
+        if detector is not None:
+            try:
+                results = detector(vehicle_crop, verbose=False, conf=0.25)
+                if results and len(results[0].boxes) > 0:
+                    best_b = max(results[0].boxes, key=lambda b: float(b.conf))
+                    x1, y1, x2, y2 = map(int, best_b.xyxy[0].tolist())
+                    bw = x2 - x1
+                    bh = y2 - y1
+                    # 6% horizontal and 8% vertical padding for complete plate boundary
+                    px1 = max(0, int(x1 - bw * 0.06))
+                    py1 = max(0, int(y1 - bh * 0.08))
+                    px2 = min(vw, int(x2 + bw * 0.06))
+                    py2 = min(vh, int(y2 + bh * 0.08))
+                    plate_crop = vehicle_crop[py1:py2, px1:px2]
+                    rel_bbox = {
+                        "x1": round(px1 / vw, 4),
+                        "y1": round(py1 / vh, 4),
+                        "x2": round(px2 / vw, 4),
+                        "y2": round(py2 / vh, 4),
+                    }
+                    return plate_crop, rel_bbox
+            except Exception as e:
+                logger.debug(f"Neural plate localization fallback: {e}")
+
+        # 2. Secondary fallback: Morphological filtering and contour analysis
         roi_y1 = int(vh * 0.35)
         roi = vehicle_crop[roi_y1:, :]
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if len(roi.shape) == 3 else roi
@@ -178,13 +243,16 @@ class ANPREngine:
         return roi, {"x1": 0.0, "y1": 0.35, "x2": 1.0, "y2": 1.0}
 
     def read_plate_text(self, plate_crop: np.ndarray) -> Tuple[Optional[str], float]:
-        """Perform OCR on plate crop.
+        """Perform OCR on plate crop with multi-pass pre-processing.
         
         Returns (sanitized_plate_text, confidence) or (None, 0.0) if unavailable.
         """
         available, reason = self.check_ocr_availability()
         if not available:
             logger.debug(f"Skipping plate OCR: {reason}")
+            return None, 0.0
+
+        if plate_crop is None or plate_crop.size == 0:
             return None, 0.0
 
         raw_text = ""
@@ -207,28 +275,51 @@ class ANPREngine:
             try:
                 import pytesseract  # type: ignore
                 gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY) if len(plate_crop.shape) == 3 else plate_crop
-                resized = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-                data = pytesseract.image_to_data(resized, output_type=pytesseract.Output.DICT, config="--psm 7")
-                texts = []
-                confs = []
-                for i, text in enumerate(data.get("text", [])):
-                    if text.strip():
-                        texts.append(text.strip())
-                        c = float(data.get("conf", [0])[i])
-                        if c > 0:
-                            confs.append(c / 100.0)
-                raw_text = "".join(texts).strip()
-                if not raw_text:
+                resized = cv2.resize(gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+                clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(6, 6))
+                contrast = clahe.apply(resized)
+                _, otsu = cv2.threshold(contrast, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+                # Try multi-variant passes to maximize character extraction
+                candidates_found = []
+                for img_var in (contrast, otsu, resized):
+                    for psm in ("--psm 7", "--psm 8", "--psm 6"):
+                        try:
+                            txt = pytesseract.image_to_string(img_var, config=psm).strip()
+                            if not txt:
+                                continue
+                            # Watchlist match check first
+                            w_match = match_watchlist_plate(txt)
+                            if w_match:
+                                return w_match[0], w_match[1]
+                            norm = normalize_indian_plate(txt)
+                            if INDIAN_PLATE_PATTERN.match(norm):
+                                return norm, 0.98
+                            clean_alphanumeric = re.sub(r"[^A-Za-z0-9]", "", txt).upper()
+                            if len(clean_alphanumeric) >= 4:
+                                candidates_found.append((clean_alphanumeric, 0.85))
+                        except Exception:
+                            pass
+
+                if candidates_found:
+                    # Pick candidate closest to valid length (8-10 chars)
+                    best_cand = max(candidates_found, key=lambda x: (len(x[0]) if len(x[0]) <= 10 else -len(x[0])))
+                    raw_text = best_cand[0]
+                    conf = best_cand[1]
+                else:
                     raw_text = pytesseract.image_to_string(resized, config="--psm 7").strip()
-                    conf = 0.75
-                elif confs:
-                    conf = float(sum(confs) / len(confs))
+                    conf = 0.65
             except Exception as e:
                 logger.warning(f"pytesseract execution error: {e}")
                 return None, 0.0
 
         if not raw_text:
             return None, 0.0
+
+        # Check watchlist match
+        w_match = match_watchlist_plate(raw_text)
+        if w_match:
+            return w_match[0], w_match[1]
 
         # Sanitize text
         cleaned = normalize_indian_plate(raw_text)
@@ -245,6 +336,7 @@ class ANPREngine:
     def process_frame(self, image: np.ndarray) -> list:
         """Process a vehicle image or frame to detect, localize, and OCR license plates.
         
+        Uses dedicated neural plate detector (YOLOv11 ONNX) with OCR and contour fallbacks.
         Returns a list of candidate dictionaries:
         [{"text": "DL01AB1234", "confidence": 0.95, "bbox": {...}, "plate_crop": ...}]
         """
@@ -261,7 +353,46 @@ class ANPREngine:
 
         candidates = []
 
-        # 1. Primary: High-accuracy OCR scanning across image for full Indian Registration patterns
+        # 1. Primary: Dedicated Neural License Plate Detection (YOLOv11 ONNX/PT)
+        detector = self.get_plate_detector()
+        if detector is not None:
+            try:
+                results = detector(image, verbose=False, conf=0.25)
+                if results and len(results[0].boxes) > 0:
+                    for b in results[0].boxes:
+                        x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
+                        box_conf = float(b.conf)
+                        bw, bh = x2 - x1, y2 - y1
+                        px1 = max(0, int(x1 - bw * 0.06))
+                        py1 = max(0, int(y1 - bh * 0.08))
+                        px2 = min(w, int(x2 + bw * 0.06))
+                        py2 = min(h, int(y2 + bh * 0.08))
+                        plate_crop = image[py1:py2, px1:px2]
+
+                        text, ocr_conf = self.read_plate_text(plate_crop)
+                        if text and len(text) >= 4:
+                            w_match = match_watchlist_plate(text)
+                            final_text = w_match[0] if w_match else text
+                            final_conf = max(ocr_conf, w_match[1] if w_match else 0.0, box_conf)
+                            candidates.append({
+                                "text": final_text,
+                                "confidence": round(final_conf, 3),
+                                "bbox": {
+                                    "x1": round(px1 / w, 4),
+                                    "y1": round(py1 / h, 4),
+                                    "x2": round(px2 / w, 4),
+                                    "y2": round(py2 / h, 4),
+                                },
+                                "plate_crop": plate_crop,
+                            })
+            except Exception as e:
+                logger.debug(f"Neural plate detection in process_frame error: {e}")
+
+        # If neural plate detector found candidate, return it
+        if candidates:
+            return candidates
+
+        # 2. Secondary: High-accuracy OCR scanning across image for full Indian Registration patterns
         available, _ = self.check_ocr_availability()
         if available:
             try:
@@ -317,7 +448,7 @@ class ANPREngine:
             except Exception as e:
                 logger.debug(f"Direct OCR exception: {e}")
 
-        # 2. Secondary: Contour-based plate localization
+        # 3. Tertiary: Contour-based plate localization
         if not candidates:
             plate_crop, rel_bbox = self.localize_plate(image)
             if plate_crop is not None and plate_crop.size > 0:
@@ -330,7 +461,7 @@ class ANPREngine:
                         "plate_crop": plate_crop,
                     })
 
-        # 3. Fallback: Lower 45% strip OCR
+        # 4. Fallback: Lower 45% strip OCR
         if not candidates and available:
             try:
                 import pytesseract

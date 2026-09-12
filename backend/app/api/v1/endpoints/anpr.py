@@ -296,6 +296,16 @@ async def scan_plate_file(
         except Exception:
             pass
 
+    import base64
+    crop_b64 = None
+    if "plate_crop" in best and best["plate_crop"] is not None and getattr(best["plate_crop"], "size", 0) > 0:
+        try:
+            ok, buf = cv2.imencode(".jpg", best["plate_crop"])
+            if ok:
+                crop_b64 = f"data:image/jpeg;base64,{base64.b64encode(buf).decode('utf-8')}"
+        except Exception:
+            pass
+
     return {
         "id": rec.id,
         "recognized": True,
@@ -306,6 +316,8 @@ async def scan_plate_file(
         "bop": bop,
         "barrier_status": "INTERCEPT_ENGAGED" if is_flagged else "CLEARED",
         "timestamp": rec.created_at.isoformat(),
+        "bbox": best.get("bbox", {}),
+        "crop_image": crop_b64,
     }
 
 

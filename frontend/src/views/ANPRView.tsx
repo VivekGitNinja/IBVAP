@@ -15,6 +15,8 @@ export function ANPRView() {
   const [feedback, setFeedback] = useState<string | null>(null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [scanResult, setScanResult] = useState<any | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [showAddWatchlist, setShowAddWatchlist] = useState(false);
   const [newWatchlistPlate, setNewWatchlistPlate] = useState('');
   const [newWatchlistReason, setNewWatchlistReason] = useState('');
@@ -60,16 +62,18 @@ export function ANPRView() {
     e.preventDefault();
     if (!uploadFile) return;
     setIsUploading(true);
+    setScanResult(null);
     playTacticalTone('click');
     try {
       const res = await api.anprScanFile(uploadFile, testBop);
+      setScanResult(res);
       if (res.recognized) {
         if (res.status === 'STOLEN_FLAGGED') {
           playTacticalTone('alert');
           setFeedback(`🚨 INTERCEPT ENGAGED: Plate ${res.plate_number} (Conf: ${(res.confidence * 100).toFixed(0)}%) matched STOLEN WATCHLIST!`);
         } else {
           playTacticalTone('verify');
-          setFeedback(`✓ OCR SUCCESS: Recognized plate ${res.plate_number} (Conf: ${(res.confidence * 100).toFixed(0)}%).`);
+          setFeedback(`✓ NEURAL ANPR SUCCESS: Recognized plate ${res.plate_number} (Conf: ${(res.confidence * 100).toFixed(0)}%).`);
         }
       } else {
         setFeedback(`⚠️ ${res.message || 'No plate recognized in image'}`);
@@ -290,14 +294,74 @@ export function ANPRView() {
                 <input
                   type="file"
                   accept="image/*"
-                  onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0] || null;
+                    setUploadFile(f);
+                    if (f) {
+                      setPreviewUrl(URL.createObjectURL(f));
+                      setScanResult(null);
+                    } else {
+                      setPreviewUrl(null);
+                    }
+                  }}
                   style={{ width: '100%', marginTop: 4, fontSize: 12, color: '#fff' }}
                 />
               </div>
+
+              {previewUrl && (
+                <div style={{ marginTop: 4, position: 'relative', borderRadius: 4, overflow: 'hidden', maxHeight: 160, background: '#000', textAlign: 'center' }}>
+                  <img src={previewUrl} alt="Vehicle Upload Preview" style={{ maxHeight: 160, maxWidth: '100%', objectFit: 'contain' }} />
+                </div>
+              )}
+
               <button className="btn btn-primary" type="submit" disabled={isUploading || !uploadFile} style={{ marginTop: 4 }}>
-                {isUploading ? 'Extracting Plate via Tesseract...' : '⚡ Run Real OCR on Image'}
+                {isUploading ? 'Detecting Plate via YOLOv11 ONNX...' : '⚡ Run Neural ANPR on Image'}
               </button>
             </form>
+
+            {/* Neural Detection Result Card */}
+            {scanResult && scanResult.recognized && (
+              <div style={{
+                marginTop: 14,
+                padding: 12,
+                background: scanResult.status === 'STOLEN_FLAGGED' ? 'rgba(255, 42, 85, 0.14)' : 'rgba(0, 240, 255, 0.08)',
+                border: scanResult.status === 'STOLEN_FLAGGED' ? '1px solid #ff2a55' : '1px solid #00f0ff',
+                borderRadius: 6,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: scanResult.status === 'STOLEN_FLAGGED' ? '#ff2a55' : '#00f0ff', textTransform: 'uppercase' }}>
+                    {scanResult.status === 'STOLEN_FLAGGED' ? '🚨 STOLEN VEHICLE INTERCEPTED' : '✓ NEURAL PLATE IDENTIFIED'}
+                  </span>
+                  <span style={{ fontSize: 10, color: '#94a3b8' }}>
+                    YOLOv11 ONNX (Conf: {(scanResult.confidence * 100).toFixed(0)}%)
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  {scanResult.crop_image ? (
+                    <img
+                      src={scanResult.crop_image}
+                      alt="License Plate Crop"
+                      style={{
+                        height: 48,
+                        borderRadius: 4,
+                        border: scanResult.status === 'STOLEN_FLAGGED' ? '2px solid #ff2a55' : '2px solid #00f0ff',
+                        boxShadow: '0 0 10px rgba(0, 240, 255, 0.3)',
+                        objectFit: 'contain',
+                        background: '#000',
+                      }}
+                    />
+                  ) : null}
+
+                  <div className="anpr-hsrp-plate" style={{ boxShadow: '0 0 12px rgba(0,255,157,0.2)' }}>
+                    <div className="anpr-hsrp-flag">
+                      <span>IND</span>
+                    </div>
+                    <div className="anpr-hsrp-text" style={{ fontSize: 16 }}>{scanResult.plate_number}</div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="panel" style={{ margin: 0, padding: 16 }}>
