@@ -14,7 +14,7 @@ export default defineConfig({
   expect: {
     timeout: 10000,
   },
-  retries: 1,
+  retries: 0,
   fullyParallel: false,
   workers: 1,
   reporter: [
@@ -26,10 +26,7 @@ export default defineConfig({
     viewport: { width: 1440, height: 900 },
     trace: 'retain-on-failure',
     screenshot: 'on',
-    video: {
-      mode: 'on',
-      size: { width: 1440, height: 900 },
-    },
+    video: 'retain-on-failure',
   },
   projects: [
     {

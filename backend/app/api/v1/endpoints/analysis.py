@@ -29,6 +29,7 @@ from backend.app.models.camera import Camera
 from backend.app.models.detection import Detection
 from backend.app.models.incident import Incident
 from backend.app.models.evidence import Evidence
+from backend.app.models.plate_read import PlateRead
 from backend.app.services.video_analysis import VideoAnalysisEngine
 
 router = APIRouter()
@@ -185,10 +186,20 @@ def get_analysis_results(job_id: int, db: Session = Depends(get_db)):
     elif job.source_type == "rtsp":
         source_name = job.source_url
 
+    # Plate reads for this analysis job
+    plate_reads = (
+        db.query(PlateRead)
+        .filter(PlateRead.job_id == job_id)
+        .order_by(PlateRead.frame_index.asc())
+        .all()
+    )
+
     return {
         "job_id": job.id,
         "source_name": source_name,
         "source_type": job.source_type,
+        "source_id": job.source_id,
+        "source_url": job.source_url,
         "status": job.status,
         "total_frames": job.total_frames,
         "processed_frames": job.processed_frames,
@@ -199,6 +210,19 @@ def get_analysis_results(job_id: int, db: Session = Depends(get_db)):
         "summary": job.summary,
         "detections_count": job.detections_count,
         "incidents_count": job.incidents_count,
+        "plate_reads": [
+            {
+                "id": p.id,
+                "plate_number": p.plate_text,
+                "plate_text": p.plate_text,
+                "confidence": p.confidence,
+                "frame_index": p.frame_index,
+                "timestamp_ms": p.timestamp_ms,
+                "bbox": p.bbox or {},
+                "vehicle_type": getattr(p, "vehicle_type", None) or "Motor Vehicle",
+            }
+            for p in plate_reads
+        ],
         "detections": [
             {
                 "id": d.id,
@@ -212,6 +236,9 @@ def get_analysis_results(job_id: int, db: Session = Depends(get_db)):
                 "bbox_x2": d.bbox_x2,
                 "bbox_y2": d.bbox_y2,
                 "timestamp_ms": d.payload.get("timestamp_ms", 0.0) if d.payload else 0.0,
+                "plate_text": (d.payload or {}).get("plate_text"),
+                "plate_conf": (d.payload or {}).get("plate_conf", 0.0),
+                "plate_bbox": (d.payload or {}).get("plate_bbox"),
                 "metadata": d.payload or {},
             }
             for d in detections

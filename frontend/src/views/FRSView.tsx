@@ -20,8 +20,10 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
   const [enrollFile, setEnrollFile] = useState<File | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [probeFile, setProbeFile] = useState<File | null>(null);
+  const [probePreviewUrl, setProbePreviewUrl] = useState<string | null>(null);
   const [isVerifyingProbe, setIsVerifyingProbe] = useState(false);
   const [probeResult, setProbeResult] = useState<any>(null);
+  const [selectedMatch, setSelectedMatch] = useState<any | null>(null);
 
   const handleVerifyProbe = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,6 +37,18 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
       if (res.matched) {
         playTacticalTone("alert");
         setFeedback(`🚨 POSITIVE BIOMETRIC MATCH: Subject identified as ${res.subject_name} (${res.similarity_percent} similarity)!`);
+        // Auto-open full interactive biometric match dossier modal!
+        setSelectedMatch({
+          subject_name: res.subject_name,
+          similarity_percent: res.similarity_percent,
+          similarity: res.similarity,
+          threat_level: res.threat_level || "CATEGORY_A",
+          notes: res.notes || "Enrolled in national border biometric lookout list.",
+          photo_url: res.photo_url || (res.subject_id ? `/api/v1/watchlist/${res.subject_id}/image` : null),
+          probe_url: probePreviewUrl || URL.createObjectURL(probeFile),
+          legal_citation: res.legal_citation || "Bharatiya Sakshya Adhiniyam, 2023 — Section 63",
+          timestamp: new Date().toLocaleTimeString(),
+        });
       } else {
         playTacticalTone("verify");
         setFeedback(res.face_detected ? "✓ Face detected, but no matching identity in border watchlist gallery." : `⚠️ ${res.message}`);
@@ -159,6 +173,49 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
         </div>
       </div>
 
+      {/* Visual Guidance Banner: Where to upload photo & how matching works */}
+      <div
+        style={{
+          background: "linear-gradient(90deg, rgba(0, 240, 255, 0.08) 0%, rgba(13, 27, 42, 0.6) 100%)",
+          border: "1px solid rgba(0, 240, 255, 0.25)",
+          borderRadius: 8,
+          padding: "14px 18px",
+          marginBottom: 16,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 16,
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ fontSize: 24 }}>💡</div>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#00f0ff", letterSpacing: "0.5px" }}>
+              HOW TO USE FACE RECOGNITION (FRS) & PHOTO UPLOADS:
+            </div>
+            <div style={{ fontSize: 12, color: "#d1d5db", marginTop: 3, lineHeight: 1.5 }}>
+              <b>1. Watchlist Enrollment (Kha upload krna hai):</b> Click <b>"+ Enroll Suspect"</b> (top right) to register a suspect face photo into the database with legal compliance metadata.
+              <br />
+              <b>2. Instant Verification (Probe Match):</b> Use <b>"Instant Probe Match"</b> (left panel) to test any suspect image against enrolled targets and immediately open the <b>Biometric Match Card</b>.
+              <br />
+              <b>3. Live Video Streaming:</b> When a person appears in front of the active camera, real-time AI draws tactical green/red bounding boxes directly on the video feed.
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={() => {
+              playTacticalTone("click");
+              setShowEnroll(true);
+            }}
+          >
+            + Enroll New Face
+          </button>
+        </div>
+      </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "1.2fr 2fr", gap: 16 }}>
         {/* Left Column: Instant Probe Matching + Live Candidate Face Matches */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -173,7 +230,11 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
                 <input
                   type="file"
                   accept="image/*"
-                  onChange={(e) => setProbeFile(e.target.files?.[0] || null)}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0] || null;
+                    setProbeFile(f);
+                    if (f) setProbePreviewUrl(URL.createObjectURL(f));
+                  }}
                   style={{ width: "100%", marginTop: 4, fontSize: 12, color: "#fff" }}
                 />
               </div>
@@ -182,13 +243,37 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
               </button>
             </form>
             {probeResult && (
-              <div style={{ marginTop: 10, padding: 10, borderRadius: 4, background: probeResult.matched ? "rgba(255, 42, 85, 0.1)" : "rgba(0, 255, 157, 0.1)", border: `1px solid ${probeResult.matched ? "#ff2a55" : "#00ff9d"}` }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: probeResult.matched ? "#ff2a55" : "#00ff9d" }}>
-                  {probeResult.matched ? `🚨 MATCH: ${probeResult.subject_name}` : (probeResult.face_detected ? "✓ No Watchlist Match" : "⚠️ No Face Detected")}
+              <div style={{ marginTop: 10, padding: 12, borderRadius: 6, background: probeResult.matched ? "rgba(255, 42, 85, 0.12)" : "rgba(0, 255, 157, 0.08)", border: `1px solid ${probeResult.matched ? "#ff2a55" : "#00ff9d"}` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: probeResult.matched ? "#ff2a55" : "#00ff9d" }}>
+                    {probeResult.matched ? `🚨 POSITIVE MATCH: ${probeResult.subject_name}` : (probeResult.face_detected ? "✓ No Watchlist Match" : "⚠️ No Face Detected")}
+                  </div>
+                  {probeResult.matched && (
+                    <button
+                      className="btn btn-primary btn-sm"
+                      style={{ padding: "3px 10px", fontSize: 11, background: "#ff2a55", borderColor: "#ff2a55" }}
+                      onClick={() => {
+                        playTacticalTone("click");
+                        setSelectedMatch({
+                          subject_name: probeResult.subject_name,
+                          similarity_percent: probeResult.similarity_percent,
+                          similarity: probeResult.similarity,
+                          threat_level: probeResult.threat_level || "CATEGORY_A",
+                          notes: probeResult.notes || "Enrolled in national border biometric lookout list.",
+                          photo_url: probeResult.photo_url || (probeResult.subject_id ? `/api/v1/watchlist/${probeResult.subject_id}/image` : null),
+                          probe_url: probePreviewUrl || (probeFile ? URL.createObjectURL(probeFile) : null),
+                          legal_citation: probeResult.legal_citation || "Bharatiya Sakshya Adhiniyam, 2023 — Section 63",
+                          timestamp: new Date().toLocaleTimeString(),
+                        });
+                      }}
+                    >
+                      🔍 Open Match Card
+                    </button>
+                  )}
                 </div>
                 {probeResult.matched && (
-                  <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>
-                    Similarity: {probeResult.similarity_percent} • Category: {probeResult.threat_level}
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 6 }}>
+                    Biometric Similarity: <b>{probeResult.similarity_percent}</b> • Classification: <b>{probeResult.threat_level}</b>
                   </div>
                 )}
               </div>
@@ -211,6 +296,22 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
                 return (
                   <div
                     key={m.id}
+                    onClick={() => {
+                      playTacticalTone("click");
+                      setSelectedMatch({
+                        subject_name: m.title.replace("Watchlist Match: ", "").replace("Match: ", ""),
+                        similarity_percent: `${Math.round((m.confidence || 0.88) * 100)}%`,
+                        similarity: m.confidence || 0.88,
+                        threat_level: m.severity || "CRITICAL",
+                        notes: m.description,
+                        photo_url: null,
+                        probe_url: null,
+                        incident_id: m.id,
+                        incident_code: m.incident_code,
+                        legal_citation: "Bharatiya Sakshya Adhiniyam, 2023 — Section 63",
+                        timestamp: new Date(m.created_at || Date.now()).toLocaleTimeString(),
+                      });
+                    }}
                     style={{
                       background: "rgba(255, 42, 85, 0.06)",
                       border: "1px solid rgba(255, 42, 85, 0.4)",
@@ -219,6 +320,8 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
                       display: "flex",
                       flexDirection: "column",
                       gap: 10,
+                      cursor: "pointer",
+                      transition: "border-color 0.2s, background 0.2s",
                     }}
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -235,15 +338,20 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
                       <span>Threat Score: {threat}</span>
                     </div>
 
-                    {openInc && (
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        style={{ alignSelf: "flex-start" }}
-                        onClick={() => openInc(m.id)}
-                      >
-                        Inspect Incident #{m.id}
-                      </button>
-                    )}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: 10, color: "#00f0ff" }}>Click card to view Biometric Dossier →</span>
+                      {openInc && (
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openInc(m.id);
+                          }}
+                        >
+                          Inspect #{m.id}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })
@@ -369,6 +477,153 @@ export function FRSView({ openInc }: { openInc?: (id: number) => void }) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Interactive Biometric Match Dossier Modal */}
+      {selectedMatch && (
+        <div className="section-65b-modal-backdrop" onClick={() => setSelectedMatch(null)}>
+          <div
+            className="panel"
+            style={{
+              maxWidth: 620,
+              width: "100%",
+              margin: 0,
+              padding: 24,
+              border: "1px solid #ff2a55",
+              boxShadow: "0 0 35px rgba(255, 42, 85, 0.35)",
+              background: "#080e18",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, borderBottom: "1px solid rgba(255, 42, 85, 0.3)", paddingBottom: 10 }}>
+              <div>
+                <b style={{ color: "#ff2a55", fontSize: 15, letterSpacing: "1px" }}>
+                  🚨 BIOMETRIC MATCH DOSSIER
+                </b>
+                <div style={{ fontSize: 10, color: "var(--text-ghost)", marginTop: 2 }}>
+                  BSA 2023 §63 Compliant • Automated Watchlist Interception
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span
+                  style={{
+                    background: "#ff2a55",
+                    color: "#fff",
+                    fontWeight: 800,
+                    fontSize: 11,
+                    padding: "3px 8px",
+                    borderRadius: 4,
+                  }}
+                >
+                  {selectedMatch.similarity_percent || "POSITIVE MATCH"}
+                </span>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  style={{ padding: "2px 8px", fontSize: 12 }}
+                  onClick={() => setSelectedMatch(null)}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Visual Side-by-Side Verification Cards */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 16 }}>
+              {/* Probe / Intercepted Image */}
+              <div style={{ background: "rgba(0,0,0,0.4)", borderRadius: 6, border: "1px solid rgba(255,255,255,0.1)", padding: 10, textAlign: "center" }}>
+                <div style={{ fontSize: 10, color: "#00f0ff", fontWeight: 700, marginBottom: 6 }}>
+                  INTERCEPTED PROBE / STREAM
+                </div>
+                <div style={{ height: 140, background: "#02060c", borderRadius: 4, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {selectedMatch.probe_url ? (
+                    <img src={selectedMatch.probe_url} alt="Probe" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  ) : (
+                    <span style={{ fontSize: 40 }}>🎯</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 6 }}>
+                  Source: Live Camera / Intercept Probe
+                </div>
+              </div>
+
+              {/* Master Watchlist Enrolled Image */}
+              <div style={{ background: "rgba(0,0,0,0.4)", borderRadius: 6, border: "1px solid rgba(255,42,85,0.3)", padding: 10, textAlign: "center" }}>
+                <div style={{ fontSize: 10, color: "#ff2a55", fontWeight: 700, marginBottom: 6 }}>
+                  ENROLLED WATCHLIST MASTER
+                </div>
+                <div style={{ height: 140, background: "#02060c", borderRadius: 4, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {selectedMatch.photo_url ? (
+                    <img
+                      src={selectedMatch.photo_url}
+                      alt={selectedMatch.subject_name}
+                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                      onError={(e) => {
+                        (e.target as HTMLElement).style.display = "none";
+                      }}
+                    />
+                  ) : (
+                    <span style={{ fontSize: 40 }}>👤</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 6 }}>
+                  Gallery Record: {selectedMatch.subject_name}
+                </div>
+              </div>
+            </div>
+
+            {/* Target Profile Dossier Details */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, background: "rgba(0,0,0,0.3)", padding: 12, borderRadius: 6, border: "1px solid rgba(255,255,255,0.06)", fontSize: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--text-secondary)" }}>Identified Subject:</span>
+                <b style={{ color: "#fff", fontSize: 14 }}>{selectedMatch.subject_name}</b>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--text-secondary)" }}>Biometric Match Confidence:</span>
+                <b style={{ color: "#00ff9d" }}>{selectedMatch.similarity_percent || "Match Confirmed"} (Cosine SFace)</b>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--text-secondary)" }}>Threat Classification:</span>
+                <span className="sev-badge sev-critical">{selectedMatch.threat_level || "CRITICAL"}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--text-secondary)" }}>Detection Timestamp:</span>
+                <span style={{ color: "#00f0ff" }}>{selectedMatch.timestamp || new Date().toLocaleTimeString()}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--text-secondary)" }}>Statutory Evidentiary Basis:</span>
+                <span style={{ color: "#ffaa00" }}>{selectedMatch.legal_citation || "Bharatiya Sakshya Adhiniyam, 2023 §63"}</span>
+              </div>
+              {selectedMatch.notes && (
+                <div style={{ marginTop: 4, borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: 6 }}>
+                  <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 2 }}>TACTICAL INTELLIGENCE NOTES:</div>
+                  <div style={{ color: "#e2e8f0", fontSize: 11, lineHeight: 1.4 }}>{selectedMatch.notes}</div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Bottom Actions */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16 }}>
+              {selectedMatch.incident_id && openInc ? (
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={() => {
+                    const incId = selectedMatch.incident_id;
+                    setSelectedMatch(null);
+                    openInc(incId);
+                  }}
+                >
+                  🔍 View Full Incident #{selectedMatch.incident_id} Evidence
+                </button>
+              ) : (
+                <div style={{ fontSize: 11, color: "var(--text-ghost)" }}>
+                  Verified by IBVAP Neural Face Recognition Core
+                </div>
+              )}
+              <button className="btn btn-secondary btn-sm" onClick={() => setSelectedMatch(null)}>
+                Close Dossier
+              </button>
+            </div>
           </div>
         </div>
       )}

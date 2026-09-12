@@ -162,7 +162,7 @@ export const WebSocketVideoCanvas: React.FC<Props> = ({
       ) : (
         <img
           ref={imgRef}
-          src={fallbackSnapshotUrl}
+          src={isStreaming ? `/api/v1/cameras/${cameraId}/stream` : fallbackSnapshotUrl}
           className="feed-img"
           alt={cameraName}
           style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}

@@ -22,7 +22,7 @@ import hashlib
 import logging
 import threading
 from datetime import datetime
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple, Any
 from collections import deque
 
 import cv2
@@ -83,6 +83,21 @@ class LivePipelineManager:
                 "pipelines": statuses,
             }
 
+    def get_latest_frame(self, camera_id: int):
+        """Retrieve the most recent frame from the camera's live pipeline buffer.
+        Returns the real-time AI annotated frame with bounding boxes if available,
+        otherwise the raw ring-buffer frame."""
+        pipeline = self._pipelines.get(camera_id)
+        if pipeline:
+            if pipeline._latest_annotated_frame is not None:
+                return pipeline._latest_annotated_frame
+            if pipeline._frame_ring_buffer:
+                try:
+                    return pipeline._frame_ring_buffer[-1]
+                except IndexError:
+                    pass
+        return None
+
     def add_event_listener(self, callback):
         """Add a listener for pipeline events (WebSocket push)."""
         self._event_listeners.append(callback)
@@ -119,6 +134,14 @@ class CameraPipeline:
         self._detections_buffer = deque(maxlen=100)
         self._frame_ring_buffer = deque(maxlen=100)  # rolling ~10s NVR clip ring buffer
         self._prev_frame = None
+
+        # Persistent spatial target tracking & visual overlay
+        self._tracked_targets: Dict[int, Dict] = {}  # int_id -> persistent track state
+        self._next_track_num: int = 1
+        self._latest_annotated_frame: Optional[np.ndarray] = None
+        self._latest_tracks: List[Dict] = []
+        self._last_cam_alert: Dict[str, float] = {}
+        self._last_evidence_save: float = 0.0
 
     def set_event_callback(self, callback):
         self._event_callback = callback
@@ -167,24 +190,33 @@ class CameraPipeline:
         face_engine = None
         reid_engine = None
         rule_engine = None
+
+        # Skip heavy face/ReID for USB webcams — they saturate CPU on laptops
+        is_usb = self.stream_url.startswith("usb://") or self.stream_url.startswith("camera://") or self.stream_url.startswith("webcam://")
+
         try:
             from edge.modules.night_enhance import get_night_enhancer
             night_enhancer = get_night_enhancer()
             logger.info(f"Camera {self.camera_id}: Night enhancer ready")
         except Exception as e:
             logger.warning(f"Camera {self.camera_id}: Night enhancer unavailable: {e}")
-        try:
-            from edge.modules.face_recognition import get_face_engine
-            face_engine = get_face_engine()
-            logger.info(f"Camera {self.camera_id}: Face engine ready (fallback={face_engine._fallback_mode})")
-        except Exception as e:
-            logger.warning(f"Camera {self.camera_id}: Face engine unavailable: {e}")
-        try:
-            from edge.modules.reid import get_reid_engine
-            reid_engine = get_reid_engine()
-            logger.info(f"Camera {self.camera_id}: ReID engine ready (fallback={reid_engine._fallback_mode})")
-        except Exception as e:
-            logger.warning(f"Camera {self.camera_id}: ReID engine unavailable: {e}")
+
+        if not is_usb:
+            try:
+                from edge.modules.face_recognition import get_face_engine
+                face_engine = get_face_engine()
+                logger.info(f"Camera {self.camera_id}: Face engine ready (fallback={face_engine._fallback_mode})")
+            except Exception as e:
+                logger.warning(f"Camera {self.camera_id}: Face engine unavailable: {e}")
+            try:
+                from edge.modules.reid import get_reid_engine
+                reid_engine = get_reid_engine()
+                logger.info(f"Camera {self.camera_id}: ReID engine ready (fallback={reid_engine._fallback_mode})")
+            except Exception as e:
+                logger.warning(f"Camera {self.camera_id}: ReID engine unavailable: {e}")
+        else:
+            logger.info(f"Camera {self.camera_id}: Face/ReID disabled for USB webcam (CPU optimization)")
+
         try:
             from edge.modules.activity_rules import get_rule_engine
             rule_engine = get_rule_engine()
@@ -204,20 +236,25 @@ class CameraPipeline:
         frame_id = 0
         while self._running:
             ret, frame = cap.read()
-            if not ret:
+            if not ret or frame is None:
                 # For video files, loop back to start
                 if self.stream_url.startswith("file://"):
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     continue
+                if self.stream_url.startswith("usb://") or self.stream_url.startswith("camera://") or self.stream_url.startswith("webcam://") or self.stream_url.isdigit():
+                    time.sleep(0.2)
+                    continue
                 logger.warning(f"Camera {self.camera_id}: Stream ended")
                 break
+            self._usb_fail_count = 0
 
             frame_id += 1
             self._frame_count = frame_id
-            self._frame_ring_buffer.append(frame.copy())
+            self._frame_ring_buffer.append(frame)  # no .copy() — ring buffer holds direct ref
 
-            # Skip frames for performance (process every 2nd frame)
-            if frame_id % 2 != 0:
+            # Skip frames for performance (AI on every 5th frame, capture every frame)
+            if frame_id % 5 != 0:
+                time.sleep(0.02)  # fast capture loop — keeps ring buffer fresh
                 continue
 
             try:
@@ -231,8 +268,8 @@ class CameraPipeline:
             except Exception as e:
                 logger.error(f"Camera {self.camera_id} frame {frame_id} error: {e}")
 
-            # Control frame rate: steady 10 FPS for edge stability
-            time.sleep(0.10)
+            # Control frame rate: brief pause after AI inference
+            time.sleep(0.03)
 
         if hasattr(self, "_cap") and self._cap is not None:
             try:
@@ -246,12 +283,25 @@ class CameraPipeline:
         """Open the video stream."""
         url = self.stream_url
         if url.startswith("usb://") or url.startswith("camera://") or url.startswith("webcam://") or url.isdigit():
-            if url.isdigit():
-                device_id = int(url)
-            else:
-                device_id = int(url.split("://")[-1] or "0")
-            backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
-            return cv2.VideoCapture(device_id, backend)
+            class StreamManagerCapture:
+                def __init__(self, stream_url):
+                    self.stream_url = stream_url
+                    self._running = True
+
+                def isOpened(self):
+                    return self._running
+
+                def read(self):
+                    from backend.app.api.v1.endpoints.cameras import stream_manager
+                    f = stream_manager.get_frame(self.stream_url)
+                    if f is not None:
+                        return True, f
+                    return False, None
+
+                def release(self):
+                    self._running = False
+
+            return StreamManagerCapture(url)
         elif url.startswith("file://"):
             path = url.replace("file://", "")
             if not os.path.exists(path):
@@ -265,7 +315,7 @@ class CameraPipeline:
             return self._create_phone_capture(url)
         else:
             # RTSP or network stream
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|stimeout;3000000"
             return cv2.VideoCapture(url)
 
     def _create_phone_capture(self, url: str):
@@ -329,6 +379,7 @@ class CameraPipeline:
                        face_engine=None, reid_engine=None, rule_engine=None):
         """Process a single frame through the full AI pipeline."""
         start_time = time.time()
+        h, w = frame.shape[:2]
 
         # Step 1: Night enhancement if needed
         enhance_result = None
@@ -345,102 +396,139 @@ class CameraPipeline:
         detections = detector.detect(detect_frame, frame_id)
         inference_ms = (time.time() - start_time) * 1000
 
-        # Step 3: Simple tracking
+        # Step 3: Persistent spatial tracking
         active_tracks = self._simple_track(detections, frame_id)
 
-        # Step 4: Face recognition on detected persons
-        for det in detections:
-            if det.class_name == "person" and face_engine:
+        # Step 4: Real-time face detection & watchlist intelligence
+        live_faces = []
+        try:
+            from backend.app.services.face import face_service
+            from backend.app.db.session import SessionLocal
+
+            raw_faces = face_service.detect_faces(frame)
+            if raw_faces:
+                db = SessionLocal()
                 try:
-                    x1, y1, x2, y2 = [int(v) for v in det.bbox]
-                    h, w = frame.shape[:2]
-                    x1, y1 = max(0, x1), max(0, y1)
-                    x2, y2 = min(w, x2), min(h, y2)
-                    if x2 > x1 + 20 and y2 > y1 + 20:
-                        face_matches = face_engine.process_frame(
-                            frame, frame_id=frame_id,
-                            camera_id=f"cam_{self.camera_id}",
-                        )
-                        # face_matches is List[FaceMatch]
-                        for match in face_matches:
-                            if match.is_watchlist_match:
-                                logger.warning(
-                                    f"Camera {self.camera_id}: WATCHLIST MATCH "
-                                    f"— {match.identity} sim={match.similarity:.3f}"
-                                )
-                except Exception as e:
-                    logger.debug(f"Face recognition error: {e}")
+                    for f in raw_faces:
+                        fb = f.get("bbox", {})
+                        fx1 = max(0, min(w - 1, int(fb.get("x1", 0.0) * w)))
+                        fy1 = max(0, min(h - 1, int(fb.get("y1", 0.0) * h)))
+                        fx2 = max(fx1 + 1, min(w, int(fb.get("x2", 1.0) * w)))
+                        fy2 = max(fy1 + 1, min(h, int(fb.get("y2", 1.0) * h)))
+                        fconf = f.get("confidence", 0.8)
 
-        # Step 5: Re-ID cross-camera matching for persons
-        if reid_engine:
-            for det in detections:
-                if det.class_name == "person":
-                    try:
-                        x1, y1, x2, y2 = [int(v) for v in det.bbox]
-                        h, w = frame.shape[:2]
-                        x1, y1 = max(0, x1), max(0, y1)
-                        x2, y2 = min(w, x2), min(h, y2)
-                        if x2 > x1 + 20 and y2 > y1 + 20:
-                            person_crop = frame[y1:y2, x1:x2]
-                            track_id = hash(str(det.bbox)) % 10000
-                            match = reid_engine.match_person(
-                                person_crop=person_crop,
-                                camera_id=str(self.camera_id),
-                                track_id=track_id,
-                                bbox=det.bbox,
-                            )
-                            if match:
-                                logger.warning(
-                                    f"Camera {self.camera_id}: CROSS-CAMERA MATCH "
-                                    f"sim={match.similarity:.3f} gap={match.time_gap:.0f}s "
-                                    f"conf={match.confidence}"
-                                )
-                    except Exception as e:
-                        logger.debug(f"ReID error: {e}")
+                        fcrop = frame[fy1:fy2, fx1:fx2]
+                        match_info = None
+                        if fcrop.size > 0:
+                            f_emb = face_service.extract_embedding(fcrop, raw_face=f.get("raw_face"), full_frame=frame)
+                            if f_emb:
+                                m_res = face_service.match_watchlist(f_emb, db)
+                                if m_res:
+                                    subj, sim = m_res
+                                    match_info = {"name": subj.name, "sim": float(sim), "id": subj.id}
+                        live_faces.append({
+                            "bbox": (fx1, fy1, fx2, fy2),
+                            "confidence": fconf,
+                            "match": match_info
+                        })
+                finally:
+                    db.close()
 
-        # Step 6: Activity rules on tracked objects
-        if rule_engine:
-            try:
-                from edge.modules.activity_rules import TrackState
-                for track in active_tracks:
-                    state = TrackState(
-                        track_id=hash(track["track_id"]) % 10000,
-                        camera_id=str(self.camera_id),
-                        class_name=track["class_name"],
-                        bbox=track["bbox"],
-                        confidence=track["confidence"],
-                        timestamp=time.time(),
-                        center=track["center"],
-                        zones=["Monitored Area"],
-                        trajectory=[track["center"]],
-                        speed=0.0,
-                        direction=0.0,
-                        first_seen=self._track_dwell.get(track["track_id"], time.time()),
-                    )
-                    alerts = rule_engine.update_track(state)
-                    for alert in alerts:
-                        logger.warning(
-                            f"Camera {self.camera_id}: RULE ALERT — "
-                            f"{alert.rule_name} [{alert.severity.value}] "
-                            f"conf={alert.confidence:.2f}"
-                        )
-                        # Fire event for WebSocket
-                        if self._event_callback:
-                            self._event_callback({
-                                "type": "activity_alert",
-                                "camera_id": self.camera_id,
-                                "rule": alert.rule_name,
-                                "severity": alert.severity.value,
-                                "reasons": alert.reasons,
-                                "confidence": alert.confidence,
-                                "timestamp": datetime.utcnow().isoformat(),
-                            })
-            except Exception as e:
-                logger.debug(f"Activity rules error: {e}")
+            # For vehicles, extract real plate text via ANPR if visible
+            for trk in active_tracks:
+                if trk["class_name"] in ("car", "truck", "bus", "motorcycle"):
+                    bx1, by1, bx2, by2 = [int(v) for v in trk["bbox"]]
+                    vcrop = frame[max(0, by1):min(h, by2), max(0, bx1):min(w, bx2)]
+                    if vcrop.size > 0:
+                        try:
+                            from backend.app.services.anpr import anpr_engine
+                            cands = anpr_engine.process_frame(vcrop)
+                            if cands:
+                                trk["plate_text"] = cands[0]["text"]
+                        except Exception:
+                            pass
+        except Exception as e:
+            logger.warning(f"Live intelligence error: {e}")
 
-        # Step 7: Check threats and generate incidents
+        # Step 5: Render tactical visual annotations on live frame
+        annotated = frame.copy()
+        h, w = annotated.shape[:2]
+
+        for trk in active_tracks:
+            bx1, by1, bx2, by2 = [int(v) for v in trk["bbox"]]
+            bx1, by1 = max(0, bx1), max(0, by1)
+            bx2, by2 = min(w - 1, bx2), min(h - 1, by2)
+
+            cls_name = trk["class_name"]
+            conf = trk["confidence"]
+            tid = trk["track_id"]
+
+            if cls_name == "person":
+                color = (0, 255, 128)  # Tactical green
+                label = f"PERSON {conf:.0%} [{tid}]"
+            elif cls_name in ("car", "truck", "bus", "motorcycle"):
+                color = (0, 165, 255)  # Tactical orange
+                label = f"VEHICLE: {cls_name.upper()} {conf:.0%}"
+            elif cls_name in ("cell phone", "phone"):
+                color = (255, 128, 0)  # Orange
+                label = f"DEVICE: {cls_name.upper()} {conf:.0%}"
+            else:
+                color = (0, 220, 255)  # Cyan
+                label = f"{cls_name.upper()} {conf:.0%}"
+
+            # Bounding box
+            cv2.rectangle(annotated, (bx1, by1), (bx2, by2), color, 2)
+            # Label badge
+            (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            cv2.rectangle(annotated, (bx1, max(0, by1 - lh - 8)), (bx1 + lw + 6, by1), color, -1)
+            cv2.putText(annotated, label, (bx1 + 3, by1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+
+            # License plate chip for vehicles
+            if trk.get("plate_text"):
+                plate_txt = f"PLATE: {trk['plate_text']}"
+                (pw, ph), _ = cv2.getTextSize(plate_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+                py = min(h - 6, by2 + ph + 8)
+                cv2.rectangle(annotated, (bx1, py - ph - 4), (bx1 + pw + 6, py + 2), (0, 240, 255), -1)
+                cv2.putText(annotated, plate_txt, (bx1 + 3, py - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
+
+        # Draw dedicated face detection and watchlist matching boxes
+        for lf in live_faces:
+            fx1, fy1, fx2, fy2 = lf["bbox"]
+            fconf = lf["confidence"]
+            fm = lf["match"]
+            if fm:
+                fcolor = (42, 42, 255)  # Alert Red
+                flabel = f"MATCH: {fm['name']} ({fm['sim']:.0%})"
+            else:
+                fcolor = (255, 235, 0)  # Tactical Cyan/Yellow
+                flabel = f"FACE {fconf:.0%}"
+
+            cv2.rectangle(annotated, (fx1, fy1), (fx2, fy2), fcolor, 2)
+            (flw, flh), _ = cv2.getTextSize(flabel, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+            cv2.rectangle(annotated, (fx1, max(0, fy1 - flh - 6)), (fx1 + flw + 6, fy1), fcolor, -1)
+            cv2.putText(annotated, flabel, (fx1 + 3, fy1 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
+
+        # Tactical HUD footer
+        person_count = sum(1 for t in active_tracks if t["class_name"] == "person")
+        hud_text = f"BOP-{self.camera_id} | PERSONS: {person_count} | FACES: {len(live_faces)} | LIVE AI PERIMETER"
+        cv2.putText(annotated, hud_text, (14, h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 240, 255), 1, cv2.LINE_AA)
+
+        self._latest_annotated_frame = annotated
+
+        # Step 6: Check threats and generate debounced incidents
         for track in active_tracks:
             self._check_threat(track, frame_id, inference_ms)
+
+        # Step 6b: Check FRS live face matches and generate high-priority Watchlist Match Alerts
+        for lf in live_faces:
+            fm = lf.get("match")
+            if fm:
+                subj_id = fm["id"]
+                now_ts = time.time()
+                last_f_ts = self._last_cam_alert.get(f"frs_{subj_id}", 0.0)
+                if now_ts - last_f_ts >= 15.0:
+                    self._last_cam_alert[f"frs_{subj_id}"] = now_ts
+                    self._generate_face_incident(fm, frame, frame_id, lf["bbox"])
 
         # Store detections for context
         self._detections_buffer.append({
@@ -467,47 +555,109 @@ class CameraPipeline:
         }
 
     def _simple_track(self, detections, frame_id):
-        """Simple position-based tracking."""
+        """Spatial centroid tracking with persistence across frames."""
+        now = time.time()
         tracks = []
-        for det in detections:
-            track_id = f"T-{self.camera_id}-{det.class_name[:3].upper()}-{hash(str(det.bbox)) % 10000:04d}"
-            center = [(det.bbox[0] + det.bbox[2]) / 2, (det.bbox[1] + det.bbox[3]) / 2]
 
+        # Remove dead tracks (not seen in > 3.0s)
+        dead = [tid for tid, t in self._tracked_targets.items() if (now - t["last_seen"]) > 3.0]
+        for tid in dead:
+            del self._tracked_targets[tid]
+
+        matched_track_ids = set()
+
+        for det in detections:
+            cx = (det.bbox[0] + det.bbox[2]) / 2.0
+            cy = (det.bbox[1] + det.bbox[3]) / 2.0
+            cls = det.class_name
+
+            # Find closest active track of same class
+            best_id = None
+            best_dist = 220.0  # pixel distance threshold
+
+            for tid, t in self._tracked_targets.items():
+                if tid in matched_track_ids or t["class_name"] != cls:
+                    continue
+                dx = cx - t["center"][0]
+                dy = cy - t["center"][1]
+                dist = (dx * dx + dy * dy) ** 0.5
+                if dist < best_dist:
+                    best_dist = dist
+                    best_id = tid
+
+            if best_id is not None:
+                # Existing track (same person / vehicle)
+                self._tracked_targets[best_id]["center"] = [cx, cy]
+                self._tracked_targets[best_id]["bbox"] = det.bbox
+                self._tracked_targets[best_id]["confidence"] = det.confidence
+                self._tracked_targets[best_id]["last_seen"] = now
+                matched_track_ids.add(best_id)
+                target_id = best_id
+                dwell = now - self._tracked_targets[best_id]["first_seen"]
+                alert_sent = self._tracked_targets[best_id].get("alert_sent", False)
+            else:
+                # New track
+                target_id = self._next_track_num
+                self._next_track_num += 1
+                self._tracked_targets[target_id] = {
+                    "center": [cx, cy],
+                    "bbox": det.bbox,
+                    "confidence": det.confidence,
+                    "class_name": cls,
+                    "first_seen": now,
+                    "last_seen": now,
+                    "alert_sent": False,
+                }
+                matched_track_ids.add(target_id)
+                dwell = 0.0
+                alert_sent = False
+
+            track_id = f"TRK-{target_id:02d}"
             track = {
                 "track_id": track_id,
+                "target_id": target_id,
                 "bbox": det.bbox,
-                "center": center,
-                "class_name": det.class_name,
+                "center": [cx, cy],
+                "class_name": cls,
                 "confidence": det.confidence,
                 "frame_id": frame_id,
+                "dwell_time": dwell,
+                "alert_sent": alert_sent,
             }
             tracks.append(track)
-
-            # Track dwell time
-            if track_id not in self._track_dwell:
-                self._track_dwell[track_id] = time.time()
 
         return tracks
 
     def _check_threat(self, track: Dict, frame_id: int, inference_ms: float):
-        """Check if a track constitutes a threat using the real scoring engine."""
+        """Check if a track constitutes a threat using the real scoring engine with anti-spam cooldown."""
         track_id = track["track_id"]
+        target_id = track.get("target_id")
         now = time.time()
+        cls = track["class_name"]
+        conf = track["confidence"]
+        dwell_time = track.get("dwell_time", 0.0)
 
-        # Calculate dwell time
-        dwell_time = now - self._track_dwell.get(track_id, now)
+        # ── ANTI-SPAM COOLDOWN CHECKS ──
+        # 1. If alert was already sent for this persistent target, don't spam!
+        if track.get("alert_sent", False):
+            # Only escalate if dwell time reaches significant loitering (> 60s) and not yet re-alerted
+            if dwell_time < 60.0 or track.get("loiter_alert_sent", False):
+                return
+            track["loiter_alert_sent"] = True
 
-        # Build signals for the scoring engine (0-1 scale)
+        # 2. Camera-level class debounce: minimum 60s between alerts of same class on this camera
+        cam_key = f"{self.camera_id}:{cls}"
+        last_time = self._incident_cooldown.get(cam_key, 0)
+        if now - last_time < 60.0:
+            return
+
         signals = {}
         is_interesting = False
 
-        cls = track["class_name"]
-        conf = track["confidence"]
-
         if cls == "person" and conf > 0.25:
             signals["confidence"] = conf
-            signals["zone_severity"] = 0.7  # Default — person in monitored area
-            signals["boundary_crossing"] = 0.8  # Near boundary
+            signals["zone_severity"] = 0.7  # Person in monitored zone
+            signals["boundary_crossing"] = 0.8
             is_interesting = True
 
         if cls in ("car", "truck", "bus", "motorcycle") and conf > 0.3:
@@ -525,16 +675,18 @@ class CameraPipeline:
         if not is_interesting:
             return
 
-        # Add dwell time signal
+        # Face match escalation
+        if track.get("face_match"):
+            signals["watchlist_match"] = 1.0
+            signals["threat_override"] = 0.95
+
         if dwell_time > 10:
             signals["loitering"] = min(dwell_time / 60.0, 1.0)
 
-        # Night context (simple hour-based)
         hour = datetime.utcnow().hour
         if hour < 6 or hour > 20:
             signals["night"] = 0.8
 
-        # Compute threat using the REAL scoring engine
         from backend.app.services.scoring import compute_threat_score
         assessment = compute_threat_score(
             signals,
@@ -545,19 +697,20 @@ class CameraPipeline:
             },
         )
 
-        # Only generate incident if score is meaningful (>= 20)
-        if assessment.score < 20:
+        score = assessment.score
+        if track.get("face_match"):
+            score = max(score, 92.0)
+
+        if score < 25:
             return
 
-        # Deduplication — don't create same incident too often
-        fingerprint = hashlib.sha256(
-            f"{track_id}:{cls}:{int(now / 60)}".encode()
-        ).hexdigest()[:16]
+        # Record cooldown and mark alert as sent
+        self._incident_cooldown[cam_key] = now
+        if target_id in self._tracked_targets:
+            self._tracked_targets[target_id]["alert_sent"] = True
+        track["alert_sent"] = True
 
-        last_time = self._incident_cooldown.get(fingerprint, 0)
-        if now - last_time < 30:  # 30 second cooldown per fingerprint
-            return
-        self._incident_cooldown[fingerprint] = now
+        fingerprint = hashlib.sha256(f"{cam_key}:{int(now / 60)}".encode()).hexdigest()[:16]
 
         # Generate incident with REAL scoring engine output
         self._generate_incident(
@@ -675,6 +828,175 @@ class CameraPipeline:
             f"({confidence:.0%}) dwell={dwell_time:.0f}s"
         )
 
+    def _generate_face_incident(self, match_info: Dict, frame: np.ndarray, frame_id: int, bbox: Tuple[int, int, int, int]):
+        """Generate a real CRITICAL Incident when live camera detects an enrolled watchlist face."""
+        now = datetime.utcnow()
+        subj_id = match_info["id"]
+        subj_name = match_info["name"]
+        sim = float(match_info["sim"])
+
+        code = f"IBVAP-{now.strftime('%Y%m%d')}-{now.strftime('%H%M%S')}-FRS-S{subj_id}-{self.camera_id}"
+        severity = "CRITICAL"
+        threat_score = round(min(100.0, 85.0 + sim * 15.0), 1)
+        title = f"Watchlist Match Alert: {subj_name} ({sim:.0%} Match)"
+        description = f"Facial recognition match confirmed for enrolled suspect '{subj_name}' on {self.camera_name} ({self.bop}) with similarity {sim:.4f}."
+
+        ai_assessment = {
+            "model": "OpenCV YuNet + SFace 128D",
+            "subject_id": subj_id,
+            "subject_name": subj_name,
+            "similarity": sim,
+            "frame": frame_id,
+            "legal_citation": "Bharatiya Sakshya Adhiniyam, 2023 — Section 63",
+        }
+
+        action = f"CRITICAL INTERCEPT: Enrolled suspect '{subj_name}' positively identified. Alert QRT and initiate intercept protocol."
+
+        timeline = [
+            {
+                "timestamp": now.isoformat(),
+                "event_type": "face_match",
+                "description": f"Facial recognition match: {subj_name} ({sim:.0%})",
+                "source": "frs_engine",
+                "confidence": sim,
+                "payload": {"bbox": list(bbox), "subject_id": subj_id, "similarity": sim},
+            },
+            {
+                "timestamp": now.isoformat(),
+                "event_type": "alert_generated",
+                "description": "CRITICAL security alert dispatched to operator console",
+                "source": "alert_engine",
+                "payload": {"severity": severity, "threat_score": threat_score},
+            }
+        ]
+
+        # 1. Fire event callback (WebSocket push to all clients)
+        event = {
+            "type": "incident_created",
+            "camera_id": self.camera_id,
+            "camera_name": self.camera_name,
+            "incident_code": code,
+            "title": title,
+            "description": description,
+            "severity": severity,
+            "threat_score": threat_score,
+            "confidence": sim,
+            "reasons": ["WATCHLIST_MATCH", f"SUBJECT_{subj_id}"],
+            "ai_assessment": ai_assessment,
+            "recommended_action": action,
+            "timeline": timeline,
+            "fingerprint": f"frs_{subj_id}",
+            "timestamp": now.isoformat(),
+        }
+
+        if self._event_callback:
+            self._event_callback(event)
+
+        # Also fire dedicated watchlist_match event
+        if self._event_callback:
+            self._event_callback({
+                "type": "watchlist_match",
+                "camera_id": self.camera_id,
+                "camera_name": self.camera_name,
+                "subject_id": subj_id,
+                "subject_name": subj_name,
+                "similarity": sim,
+                "incident_code": code,
+                "timestamp": now.isoformat(),
+            })
+
+        # 2. Persist to database
+        try:
+            from backend.app.db.session import SessionLocal
+            from backend.app.models.incident import Incident
+            from backend.app.models.alert import Alert
+            from backend.app.models.evidence import Evidence
+            from backend.app.services.c2 import dispatch_incident_webhook
+            from pathlib import Path
+            import hashlib
+
+            ev_dir = Path("data/evidence/clips")
+            ev_dir.mkdir(parents=True, exist_ok=True)
+            ev_fn = f"ev_cam_{self.camera_id}_frs_{subj_id}_{int(now.timestamp())}.jpg"
+            ev_fp = ev_dir / ev_fn
+
+            ann_crop = frame.copy()
+            fx1, fy1, fx2, fy2 = bbox
+            cv2.rectangle(ann_crop, (fx1, fy1), (fx2, fy2), (0, 0, 255), 2)
+            cv2.putText(ann_crop, f"MATCH: {subj_name} ({sim:.0%})", (fx1, max(20, fy1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            cv2.imwrite(str(ev_fp), ann_crop)
+
+            ev_hash = ""
+            if os.path.exists(ev_fp):
+                with open(ev_fp, "rb") as ef:
+                    ev_hash = hashlib.sha256(ef.read()).hexdigest()
+
+            db = SessionLocal()
+            try:
+                inc = Incident(
+                    incident_code=code,
+                    title=title,
+                    description=description,
+                    severity=severity,
+                    threat_score=threat_score,
+                    confidence=sim,
+                    status="OPEN",
+                    reason_codes=["WATCHLIST_MATCH", f"SUBJECT_{subj_id}"],
+                    camera_id=self.camera_id,
+                    camera_name=self.camera_name,
+                    zone_name=self.bop,
+                    fingerprint=f"frs_{subj_id}",
+                    recommended_action=action,
+                    ai_assessment=ai_assessment,
+                    timeline=timeline,
+                    created_at=now,
+                )
+                db.add(inc)
+                db.flush()
+
+                al = Alert(
+                    incident_id=inc.id,
+                    priority=severity,
+                    status="NEW",
+                    message=f"CRITICAL: Watchlist suspect '{subj_name}' detected on {self.camera_name} (Score: {threat_score:.0f}/100)",
+                    created_at=now,
+                )
+                db.add(al)
+
+                ev = Evidence(
+                    incident_id=inc.id,
+                    evidence_type="snapshot",
+                    file_path=str(ev_fp),
+                    sha256=ev_hash,
+                    manifest_path=str(ev_fp) + ".json",
+                    manifest_data={"subject_id": subj_id, "similarity": sim, "camera_id": self.camera_id, "statute": "BSA_2023_SEC_63"},
+                    file_size_bytes=os.path.getsize(ev_fp) if os.path.exists(ev_fp) else 0,
+                    threat_score=threat_score,
+                    camera_id=self.camera_id,
+                    camera_name=self.camera_name,
+                    detection_metadata={"subject_name": subj_name, "similarity": sim},
+                )
+                db.add(ev)
+                db.commit()
+
+                dispatch_incident_webhook(
+                    {
+                        "incident_code": inc.incident_code,
+                        "title": inc.title,
+                        "severity": inc.severity,
+                        "threat_score": inc.threat_score,
+                        "confidence": inc.confidence,
+                        "zone_name": inc.zone_name,
+                        "camera_id": self.camera_id,
+                    },
+                    {"id": ev.id, "evidence_type": ev.evidence_type, "sha256": ev.sha256}
+                )
+                logger.info(f"Camera {self.camera_id}: WATCHLIST MATCH INCIDENT CREATED — {code} for '{subj_name}'")
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"Failed to persist FRS incident: {e}", exc_info=True)
+
     def _generate_nvr_clip(self, incident_code: str):
         """
         Synthesize an MP4/AVI video clip from the rolling ring buffer for Section 65B court evidence.
@@ -690,24 +1012,33 @@ class CameraPipeline:
 
             clips_dir = Path(settings.evidence_dir) / "clips"
             clips_dir.mkdir(parents=True, exist_ok=True)
+
+            import shutil
+            total, used, free = shutil.disk_usage(clips_dir)
+            if free < 100 * 1024 * 1024:  # less than 100MB free
+                logger.warning(f"Low disk space ({free // (1024*1024)}MB free). Skipping clip generation.")
+                return None, None, 0, ""
+
             filename = f"INC-{incident_code}.mp4"
             file_path = clips_dir / filename
 
-            frames = list(self._frame_ring_buffer)
+            frames = list(self._frame_ring_buffer)[-25:]  # last 25 frames
             if not frames:
                 return None, None, 0, ""
 
-            h, w = frames[0].shape[:2]
+            # Downscale to 640x360 for compact size (<150KB) and fast encoding
+            clip_w, clip_h = 640, 360
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            out = cv2.VideoWriter(str(file_path), fourcc, 10.0, (w, h))
+            out = cv2.VideoWriter(str(file_path), fourcc, 10.0, (clip_w, clip_h))
             if not out.isOpened():
                 fourcc = cv2.VideoWriter_fourcc(*"MJPG")
                 filename = f"INC-{incident_code}.avi"
                 file_path = clips_dir / filename
-                out = cv2.VideoWriter(str(file_path), fourcc, 10.0, (w, h))
+                out = cv2.VideoWriter(str(file_path), fourcc, 10.0, (clip_w, clip_h))
 
             for f in frames:
-                out.write(f)
+                resized = cv2.resize(f, (clip_w, clip_h), interpolation=cv2.INTER_AREA)
+                out.write(resized)
             out.release()
 
             if file_path.exists() and file_path.stat().st_size > 0:
@@ -722,9 +1053,9 @@ class CameraPipeline:
     def _save_incident(self, code, track, reasons, severity, score, confidence,
                         fingerprint, ai_assessment, action, timeline):
         """Save a real incident to the database with rate limiting to prevent db locks and disk floods."""
-        # Rate limit: max 1 real saved incident per 15s per camera
+        # Rate limit: max 1 real saved incident per 60s per camera
         now_ts = time.time()
-        if hasattr(self, "_last_incident_ts") and (now_ts - self._last_incident_ts) < 15.0:
+        if hasattr(self, "_last_incident_ts") and (now_ts - self._last_incident_ts) < 60.0:
             return
         self._last_incident_ts = now_ts
 

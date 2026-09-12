@@ -135,6 +135,15 @@ def transcode_and_seal_clip(input_path: str, output_path: str | None = None) -> 
     import logging
 
     logger = logging.getLogger(__name__)
+
+    # If it's an image, calculate SHA-256 directly without video transcode
+    _, ext = os.path.splitext(input_path)
+    if ext.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+        import hashlib
+        with open(input_path, "rb") as f:
+            h = hashlib.sha256(f.read()).hexdigest()
+        return input_path, h, True
+
     ffmpeg_bin = shutil.which("ffmpeg")
 
     if not output_path:

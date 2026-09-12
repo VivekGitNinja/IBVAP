@@ -142,9 +142,62 @@ async def verify_probe_face(
         }
 
     matched_subj, sim = match_res
+
+    # Persist Incident and alert for FRS Positive Match
+    import uuid
+    from backend.app.models.alert import Alert
+    from backend.app.services.c2 import dispatch_incident_webhook
+
+    threat_score = round(min(100.0, 85.0 + sim * 15.0), 1)
+    inc_code = f"INC-FRS-S{matched_subj.id}-{uuid.uuid4().hex[:6].upper()}"
+    inc = Incident(
+        incident_code=inc_code,
+        title=f"FRS Biometric Alert: {matched_subj.name} ({round(float(sim)*100, 1)}% Match)",
+        description=f"Facial recognition probe matched enrolled suspect '{matched_subj.name}' with similarity {sim:.4f}.",
+        severity="CRITICAL",
+        threat_score=threat_score,
+        confidence=float(sim),
+        status="OPEN",
+        camera_id=1,
+        camera_name="FRS Biometric Verification Terminal",
+        reason_codes=["WATCHLIST_MATCH", f"SUBJECT_{matched_subj.id}"],
+        ai_assessment={
+            "model": "OpenCV YuNet + SFace 128D",
+            "subject_id": matched_subj.id,
+            "subject_name": matched_subj.name,
+            "similarity": float(sim),
+            "legal_citation": "Bharatiya Sakshya Adhiniyam, 2023 — Section 63",
+        },
+    )
+    db.add(inc)
+    db.commit()
+    db.refresh(inc)
+
+    al = Alert(
+        incident_id=inc.id,
+        priority="CRITICAL",
+        status="NEW",
+        message=f"CRITICAL: Watchlist suspect '{matched_subj.name}' matched via FRS probe (Similarity: {round(float(sim)*100, 1)}%)",
+    )
+    db.add(al)
+    db.commit()
+
+    dispatch_incident_webhook(
+        {
+            "incident_code": inc.incident_code,
+            "title": inc.title,
+            "severity": inc.severity,
+            "threat_score": inc.threat_score,
+            "confidence": inc.confidence,
+        },
+        None,
+    )
+
     return {
         "matched": True,
         "face_detected": True,
+        "incident_id": inc.id,
+        "incident_code": inc.incident_code,
         "subject_id": matched_subj.id,
         "subject_name": matched_subj.name,
         "similarity": round(float(sim), 3),

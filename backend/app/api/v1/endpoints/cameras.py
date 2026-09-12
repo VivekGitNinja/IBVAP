@@ -37,6 +37,18 @@ router = APIRouter()
 _PHONE_FRAMES: Dict[str, np.ndarray] = {}
 _PHONE_UPDATED: Dict[str, float] = {}
 _PHONE_LOCK = threading.Lock()
+_SNAPSHOT_DETECTOR = None
+_SNAPSHOT_DETECTOR_LOCK = threading.Lock()
+
+def get_snapshot_detector():
+    global _SNAPSHOT_DETECTOR
+    if _SNAPSHOT_DETECTOR is None:
+        with _SNAPSHOT_DETECTOR_LOCK:
+            if _SNAPSHOT_DETECTOR is None:
+                from edge.detection.factory import create_detector
+                _SNAPSHOT_DETECTOR = create_detector("yolo11n")
+    return _SNAPSHOT_DETECTOR
+
 
 
 def update_phone_frame(camera_id: str, frame: np.ndarray):
@@ -842,6 +854,37 @@ def patch_camera(camera_id: int, data: CameraPatchIn, db: Session = Depends(get_
     return c
 
 
+@router.post("/{camera_id}/connect")
+def connect_camera(camera_id: int, db: Session = Depends(get_db),
+                   user: dict = Depends(current_user)):
+    """Connect camera, start stream capture and start live AI detection pipeline."""
+    c = db.get(Camera, camera_id)
+    if not c:
+        raise HTTPException(404, "Camera not found")
+
+    c.status = "ONLINE"
+    c.active = True
+    c.health_score = 100
+    db.commit()
+
+    # Start live pipeline if stream URL is provided
+    if c.stream_url and not c.stream_url.startswith("demo://"):
+        try:
+            from backend.app.services.live_pipeline import live_manager
+            live_manager.start_camera(
+                camera_id=c.id,
+                stream_url=c.stream_url,
+                camera_name=c.name,
+                bop=c.bop,
+            )
+        except Exception as e:
+            print(f"Pipeline start warning for camera {c.id}: {e}")
+
+    log_action(db, user["sub"], user.get("role", ""), "CONNECT", "camera",
+               str(c.id), {"name": c.name, "stream_url": c.stream_url})
+    return {"connected": True, "camera_id": camera_id, "status": "ONLINE", "message": "Camera connected and live AI detection pipeline started."}
+
+
 @router.post("/{camera_id}/disconnect")
 def disconnect_camera(camera_id: int, db: Session = Depends(get_db),
                       user: dict = Depends(current_user)):
@@ -972,6 +1015,18 @@ def _generate_offline_frame(camera: Camera) -> "np.ndarray":
                 (w // 2 - 290, h // 2 + 70), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 255), 1)
 
     return frame
+
+
+_OFFLINE_JPEG_CACHE: Dict[int, bytes] = {}
+
+
+def get_cached_offline_jpeg(camera: Camera) -> bytes:
+    """Return cached JPEG bytes for an offline camera placeholder to avoid burning CPU."""
+    if camera.id not in _OFFLINE_JPEG_CACHE:
+        frame = _generate_offline_frame(camera)
+        _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        _OFFLINE_JPEG_CACHE[camera.id] = jpeg.tobytes()
+    return _OFFLINE_JPEG_CACHE[camera.id]
 
 
 @router.post("/{camera_id}/test")
@@ -1328,6 +1383,11 @@ class StreamCaptureManager:
         now = time.time()
         with self._lock:
             if self._running.get(url, False):
+                for _ in range(8):
+                    time.sleep(0.05)
+                    frame = self._frames.get(url)
+                    if frame is not None:
+                        return frame.copy()
                 return None
             last_att = self._last_attempt.get(url, 0)
             if now - last_att < 8.0:
@@ -1339,6 +1399,13 @@ class StreamCaptureManager:
         t = threading.Thread(target=self._background_connect_and_stream, args=(url,), daemon=True)
         self._threads[url] = t
         t.start()
+
+        # Brief wait for initial hardware frame
+        for _ in range(12):
+            time.sleep(0.05)
+            frame = self._frames.get(url)
+            if frame is not None:
+                return frame.copy()
 
         return None
 
@@ -1352,8 +1419,9 @@ class StreamCaptureManager:
                     device_id = int(url.split("://")[-1] or "0")
                 backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
                 cap = cv2.VideoCapture(device_id, backend)
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                if sys.platform != "darwin":
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
             elif url.startswith("file://"):
                 path = url.replace("file://", "")
                 cap = cv2.VideoCapture(path)
@@ -1387,13 +1455,14 @@ class StreamCaptureManager:
 
             self._caps[url] = cap
 
-            # Warmup
-            for _ in range(2):
+            # Warmup for AVFoundation / hardware cameras
+            for _ in range(15):
                 if not self._running.get(url, False):
                     break
                 ret, f = cap.read()
                 if ret and f is not None:
                     self._frames[url] = f
+                    break
                 time.sleep(0.05)
 
             fail_count = 0
@@ -1406,7 +1475,8 @@ class StreamCaptureManager:
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 else:
                     fail_count += 1
-                    if fail_count > 12:
+                    max_fails = 50 if (url.startswith("usb://") or url.startswith("camera://") or url.startswith("webcam://") or url.isdigit()) else 15
+                    if fail_count > max_fails:
                         break
                 time.sleep(0.04)  # ~25 FPS steady capture
 
@@ -1481,55 +1551,38 @@ def get_snapshot(camera_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Camera not found")
 
     url = c.stream_url or ""
-    frame = None
 
-    if url.startswith("demo://") or not url:
-        if settings.enable_demo:
-            frame = _generate_tactical_frame(c, int(time.time() * 5))
-        else:
-            frame = _generate_offline_frame(c)
+    from backend.app.services.live_pipeline import live_manager
+    is_live_pipeline_frame = False
+
+    # Instant response for inactive/offline/demo cameras
+    if not c.active or c.status == "OFFLINE" or url.startswith("demo://") or not url:
+        if not (settings.enable_demo and settings.enable_synthetic_cameras):
+            return Response(content=get_cached_offline_jpeg(c), media_type="image/jpeg", headers={"Cache-Control": "max-age=30"})
+        frame = _generate_tactical_frame(c, int(time.time() * 5))
     else:
-        frame = stream_manager.get_frame(url)
+        frame = live_manager.get_latest_frame(camera_id)
+        if frame is not None:
+            is_live_pipeline_frame = True
+        else:
+            frame = stream_manager.get_frame(url)
         if frame is None:
-            if settings.enable_demo:
+            if settings.enable_demo and settings.enable_synthetic_cameras:
                 frame = _generate_tactical_frame(c, int(time.time() * 5))
             else:
-                frame = _generate_offline_frame(c)
+                return Response(content=get_cached_offline_jpeg(c), media_type="image/jpeg", headers={"Cache-Control": "max-age=5"})
 
-    # Run detection on non-demo frames if needed
-    if not url.startswith("demo://"):
+    # Lightweight overlay only if frame was not already annotated by live pipeline
+    if not is_live_pipeline_frame:
         try:
-            from edge.detection.factory import create_detector
-            detector = create_detector("yolo26n")
-            detections = detector.detect(frame)
-
-            for det in detections:
-                x1, y1, x2, y2 = [int(v) for v in det.bbox]
-                label = f"{det.class_name} {det.confidence:.0%}"
-
-                if det.class_name in ("person",):
-                    color = (0, 255, 0)
-                elif det.class_name in ("car", "truck", "bus", "motorcycle"):
-                    color = (0, 165, 255)
-                else:
-                    color = (0, 255, 255)
-
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                cv2.rectangle(frame, (x1, y1 - th - 8), (x1 + tw + 4, y1), color, -1)
-                cv2.putText(frame, label, (x1 + 2, y1 - 4),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-
             h, w = frame.shape[:2]
-            cv2.putText(frame, f"BOP-{camera_id} | YOLO26n | {len(detections)} objects",
+            cv2.putText(frame, f"CAM-{camera_id} | Live",
                         (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 229, 200), 2)
         except Exception:
-            h, w = frame.shape[:2]
-            cv2.putText(frame, f"CAM-{camera_id} | Live Stream",
-                        (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 229, 200), 2)
+            pass
 
     # Encode as JPEG
-    _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
 
     return StreamingResponse(
         io.BytesIO(jpeg.tobytes()),
@@ -1544,9 +1597,10 @@ async def mjpeg_stream(camera_id: int, request: Request, max_frames: Optional[in
     """
     MJPEG live stream endpoint.
     Frontend connects via: <img src="/api/v1/cameras/{id}/stream">
-    Captures frames from persistent StreamCaptureManager, draws detection boxes, streams as MJPEG.
+    Captures frames directly from live AI pipeline with visual bounding boxes, or stream manager fallback.
     """
     from fastapi.responses import StreamingResponse
+    from backend.app.services.live_pipeline import live_manager
     import cv2
     import io
     import asyncio
@@ -1591,40 +1645,24 @@ async def mjpeg_stream(camera_id: int, request: Request, max_frames: Optional[in
                         await asyncio.sleep(sleep_dur)
             else:
                 frame_idx = 0
-                detector = None
-                try:
-                    from edge.detection.factory import create_detector
-                    detector = create_detector("yolo26n")
-                except Exception:
-                    pass
-
-                sleep_dur = 0.02 if max_frames else (1.0 / max(1, c.fps or 15))
+                sleep_dur = 0.02 if max_frames else (1.0 / max(1, c.fps or 20))
                 while True:
                     if await request.is_disconnected():
                         break
                     if max_frames is not None and frame_idx >= max_frames:
                         break
                     frame_idx += 1
-                    raw = stream_manager.get_frame(url)
-                    if raw is None:
-                        if settings.enable_demo:
-                            raw = _generate_tactical_frame(c, frame_idx)
-                        else:
-                            raw = _generate_offline_frame(c)
 
-                    frame = raw.copy()
-                    if detector is not None:
-                        try:
-                            detections = detector.detect(frame)
-                            for det in detections:
-                                x1, y1, x2, y2 = [int(v) for v in det.bbox]
-                                label = f"{det.class_name} {det.confidence:.0%}"
-                                color = (0, 255, 0) if det.class_name == "person" else (0, 165, 255)
-                                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                                cv2.putText(frame, label, (x1, max(15, y1 - 5)),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-                        except Exception:
-                            pass
+                    # Fetch real-time AI annotated frame from live pipeline
+                    frame = live_manager.get_latest_frame(camera_id)
+                    if frame is None:
+                        raw = stream_manager.get_frame(url)
+                        if raw is not None:
+                            frame = raw.copy()
+                        elif settings.enable_demo:
+                            frame = _generate_tactical_frame(c, frame_idx)
+                        else:
+                            frame = _generate_offline_frame(c)
 
                     _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     yield (b"--frame\r\n"

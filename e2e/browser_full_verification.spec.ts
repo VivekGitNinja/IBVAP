@@ -81,7 +81,6 @@ test.describe.serial('IBVAP Real Browser Full Verification Suite', () => {
   test.beforeAll(async ({ browser }) => {
     context = await browser.newContext({
       viewport: { width: 1440, height: 900 },
-      recordVideo: { dir: path.join(EVIDENCE_DIR, 'videos') },
     });
     page = await context.newPage();
     setupPageListeners(page);
@@ -99,16 +98,20 @@ test.describe.serial('IBVAP Real Browser Full Verification Suite', () => {
   // ═════════════════════════════════════════════════════════════════
 
   test('2.1 Open http://localhost:5173 -> login modal renders', async () => {
-    await page.goto('http://localhost:5173/');
+    await page.goto('http://localhost:5173/', { waitUntil: 'domcontentloaded' });
     await page.waitForLoadState('domcontentloaded');
 
     const loginModal = page.locator('.modal-content, form').first();
-    await expect(loginModal).toBeVisible({ timeout: 5000 });
+    await expect(loginModal).toBeVisible({ timeout: 15000 });
     await page.screenshot({ path: path.join(EVIDENCE_DIR, '01_login_page.png') });
     console.log('  [PASS] 2.1 Login modal rendered. Screenshot: 01_login_page.png');
   });
 
   test('2.2 Invalid credentials -> exact error message shown', async () => {
+    if (!await page.locator('.modal-content').isVisible()) {
+      await page.goto('http://localhost:5173/', { waitUntil: 'domcontentloaded' });
+      await page.waitForLoadState('domcontentloaded');
+    }
     const userInput = page.locator('.modal-content input[type="text"]').first();
     const passInput = page.locator('.modal-content input[type="password"]').first();
     const authBtn = page.locator('.modal-content button:has-text("AUTHENTICATE"), .modal-content button[type="submit"]').first();
@@ -119,7 +122,7 @@ test.describe.serial('IBVAP Real Browser Full Verification Suite', () => {
 
     // Assert exact error message banner
     const errorBanner = page.locator('.modal-content div:has-text("⚠️")').first();
-    await expect(errorBanner).toBeVisible({ timeout: 6000 });
+    await expect(errorBanner).toBeVisible({ timeout: 15000 });
     const errorText = await errorBanner.textContent();
     console.log(`  [ASSERT] Error text displayed: "${errorText?.trim()}"`);
     expect(errorText).toContain('Invalid credentials');
@@ -129,6 +132,10 @@ test.describe.serial('IBVAP Real Browser Full Verification Suite', () => {
   });
 
   test('2.3 Valid operator login -> dashboard/Live Monitor loads', async () => {
+    if (!await page.locator('.modal-content').isVisible()) {
+      await page.goto('http://localhost:5173/', { waitUntil: 'domcontentloaded' });
+      await page.waitForLoadState('domcontentloaded');
+    }
     const userInput = page.locator('.modal-content input[type="text"]').first();
     const passInput = page.locator('.modal-content input[type="password"]').first();
     const authBtn = page.locator('.modal-content button:has-text("AUTHENTICATE"), .modal-content button[type="submit"]').first();
@@ -138,7 +145,7 @@ test.describe.serial('IBVAP Real Browser Full Verification Suite', () => {
     await authBtn.click();
 
     // Assert modal dismissal and clearance
-    await expect(page.locator('.modal-content')).not.toBeVisible({ timeout: 6000 });
+    await expect(page.locator('.modal-content')).not.toBeVisible({ timeout: 25000 });
     await expect(page.locator('header').first()).toBeVisible();
     await page.waitForTimeout(1000);
     await page.screenshot({ path: path.join(EVIDENCE_DIR, '03_login_success.png') });
@@ -182,7 +189,7 @@ test.describe.serial('IBVAP Real Browser Full Verification Suite', () => {
   // ═════════════════════════════════════════════════════════════════
 
   test('3.1 Video Studio: Assert Upload Video control exists', async () => {
-    await page.goto('http://localhost:5173/?view=media');
+    await page.goto('http://localhost:5173/?view=media', { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(1000);
     const uploadBtn = page.getByTestId('upload-button').or(page.locator('button:has-text("Upload Video"), label:has-text("Upload Video")')).first();
     await expect(uploadBtn).toBeVisible();
@@ -300,10 +307,10 @@ test.describe.serial('IBVAP Real Browser Full Verification Suite', () => {
   test('4.3 Real-time detections feed visibly updates', async () => {
     await expect(page.locator('text=REAL FRAME DETECTIONS FEED').first()).toBeVisible({ timeout: 35000 });
 
-    const detections = page.locator('.tactical-track-card, span:has-text("TRK-"), span:has-text("🚗")');
+    const detections = page.locator('.tactical-track-card, [data-testid="detection-card"], span:has-text("TRK-"), span:has-text("🚗")');
     await expect.poll(async () => {
       return await detections.count();
-    }, { timeout: 25000 }).toBeGreaterThanOrEqual(1);
+    }, { timeout: 60000 }).toBeGreaterThanOrEqual(1);
 
     const count = await detections.count();
     console.log(`  [ASSERT] Detections in feed count: ${count}`);

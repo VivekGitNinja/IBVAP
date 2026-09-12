@@ -10,7 +10,11 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from backend.app.db.session import get_db
 from backend.app.models.plate_read import PlateRead
+from backend.app.models.incident import Incident
+from backend.app.models.alert import Alert
 from backend.app.services.anpr import anpr_engine
+from backend.app.services.c2 import dispatch_incident_webhook
+from backend.app.services.live_pipeline import live_manager
 
 router = APIRouter()
 
@@ -57,6 +61,15 @@ WATCHLIST_DB = [
         "threat_level": "MEDIUM",
         "vehicle_model": "Tata Xenon Pickup",
         "added_at": (datetime.utcnow() - timedelta(days=1)).isoformat(),
+    },
+    {
+        "id": 4,
+        "plate_number": "KA 02 MN 1826",
+        "reason": "Border Lookout Notice — Flagged High-Speed Vehicle",
+        "agency": "Special Operations Group / Traffic Enforcement",
+        "threat_level": "CRITICAL",
+        "vehicle_model": "Volvo XC90 (Black)",
+        "added_at": (datetime.utcnow() - timedelta(hours=12)).isoformat(),
     },
 ]
 
@@ -157,7 +170,8 @@ def list_scanned_plates(
 
     results = []
     for r in records:
-        is_flagged = any(w["plate_number"].upper() == r.plate_text.upper() for w in WATCHLIST_DB)
+        clean_r_plate = r.plate_text.replace(" ", "").upper()
+        is_flagged = any(w["plate_number"].replace(" ", "").upper() == clean_r_plate for w in WATCHLIST_DB)
         plate_status = "STOLEN_FLAGGED" if is_flagged else "CLEARED"
         if status and plate_status.lower() != status.lower():
             continue
@@ -204,7 +218,8 @@ async def scan_plate_file(
 
     best = candidates[0]
     plate_clean = best["text"]
-    is_flagged = any(w["plate_number"].upper() == plate_clean.upper() for w in WATCHLIST_DB)
+    clean_no_space = plate_clean.replace(" ", "").upper()
+    is_flagged = any(w["plate_number"].replace(" ", "").upper() == clean_no_space for w in WATCHLIST_DB)
     computed_status = "STOLEN_FLAGGED" if is_flagged else "CLEARED"
 
     rec = PlateRead(
@@ -218,6 +233,68 @@ async def scan_plate_file(
     db.add(rec)
     db.commit()
     db.refresh(rec)
+
+    if is_flagged:
+        now = datetime.utcnow()
+        inc_code = f"IBVAP-{now.strftime('%Y%m%d')}-{now.strftime('%H%M%S')}-ANPR-STOLEN"
+        inc = Incident(
+            incident_code=inc_code,
+            title=f"Stolen Vehicle Intercept: {plate_clean} (Barrier Triggered)",
+            description=f"Vehicle registration plate '{plate_clean}' matched stolen vehicle lookout at {bop}. Automated barrier engaged.",
+            severity="CRITICAL",
+            threat_score=98.0,
+            confidence=best["confidence"],
+            status="OPEN",
+            zone_name="Primary Checkpost",
+            camera_name=bop,
+            reason_codes=["STOLEN_VEHICLE_MATCH", f"PLATE_{clean_no_space}"],
+            ai_assessment={
+                "model": "ANPR OCR",
+                "plate_number": plate_clean,
+                "confidence": best["confidence"],
+                "stolen_flagged": True,
+                "barrier_engaged": True,
+                "legal_citation": "Bharatiya Sakshya Adhiniyam, 2023 — Section 63",
+            },
+        )
+        db.add(inc)
+        db.flush()
+        alert = Alert(
+            incident_id=inc.id,
+            priority="CRITICAL",
+            status="NEW",
+            message=f"CRITICAL: Stolen vehicle '{plate_clean}' detected at {bop} — Intercept Barrier Armed",
+        )
+        db.add(alert)
+        db.commit()
+
+        try:
+            dispatch_incident_webhook({
+                "incident_code": inc.incident_code,
+                "title": inc.title,
+                "severity": inc.severity,
+                "threat_score": inc.threat_score,
+                "confidence": inc.confidence,
+                "zone_name": inc.zone_name,
+                "camera_name": bop,
+                "plate_number": plate_clean,
+            })
+            live_manager._on_event({
+                "type": "incident_created",
+                "data": {
+                    "id": inc.id,
+                    "incident_code": inc.incident_code,
+                    "incident_type": inc.title,
+                    "severity": inc.severity,
+                    "threat_score": inc.threat_score,
+                    "confidence": inc.confidence,
+                    "bop": bop,
+                    "camera_name": bop,
+                    "summary": inc.description,
+                }
+            })
+        except Exception:
+            pass
 
     return {
         "id": rec.id,
@@ -236,7 +313,8 @@ async def scan_plate_file(
 def scan_plate(data: PlateIn, db: Session = Depends(get_db)):
     """Record an ANPR scan, persist in database, and check against stolen watchlist."""
     plate_clean = data.plate_number.strip().upper()
-    is_flagged = any(w["plate_number"].upper() == plate_clean for w in WATCHLIST_DB)
+    clean_no_space = plate_clean.replace(" ", "").upper()
+    is_flagged = any(w["plate_number"].replace(" ", "").upper() == clean_no_space for w in WATCHLIST_DB)
     computed_status = "STOLEN_FLAGGED" if is_flagged else data.status
 
     rec = PlateRead(
@@ -250,6 +328,68 @@ def scan_plate(data: PlateIn, db: Session = Depends(get_db)):
     db.add(rec)
     db.commit()
     db.refresh(rec)
+
+    if is_flagged:
+        now = datetime.utcnow()
+        inc_code = f"IBVAP-{now.strftime('%Y%m%d')}-{now.strftime('%H%M%S')}-ANPR-STOLEN"
+        inc = Incident(
+            incident_code=inc_code,
+            title=f"Stolen Vehicle Intercept: {plate_clean} (Barrier Triggered)",
+            description=f"Vehicle registration plate '{plate_clean}' matched stolen vehicle lookout at {data.bop}. Automated barrier engaged.",
+            severity="CRITICAL",
+            threat_score=98.0,
+            confidence=data.confidence,
+            status="OPEN",
+            zone_name="Primary Checkpost",
+            camera_name=data.bop,
+            reason_codes=["STOLEN_VEHICLE_MATCH", f"PLATE_{clean_no_space}"],
+            ai_assessment={
+                "model": "ANPR OCR",
+                "plate_number": plate_clean,
+                "confidence": data.confidence,
+                "stolen_flagged": True,
+                "barrier_engaged": True,
+                "legal_citation": "Bharatiya Sakshya Adhiniyam, 2023 — Section 63",
+            },
+        )
+        db.add(inc)
+        db.flush()
+        alert = Alert(
+            incident_id=inc.id,
+            priority="CRITICAL",
+            status="NEW",
+            message=f"CRITICAL: Stolen vehicle '{plate_clean}' detected at {data.bop} — Intercept Barrier Armed",
+        )
+        db.add(alert)
+        db.commit()
+
+        try:
+            dispatch_incident_webhook({
+                "incident_code": inc.incident_code,
+                "title": inc.title,
+                "severity": inc.severity,
+                "threat_score": inc.threat_score,
+                "confidence": inc.confidence,
+                "zone_name": inc.zone_name,
+                "camera_name": data.bop,
+                "plate_number": plate_clean,
+            })
+            live_manager._on_event({
+                "type": "incident_created",
+                "data": {
+                    "id": inc.id,
+                    "incident_code": inc.incident_code,
+                    "incident_type": inc.title,
+                    "severity": inc.severity,
+                    "threat_score": inc.threat_score,
+                    "confidence": inc.confidence,
+                    "bop": data.bop,
+                    "camera_name": data.bop,
+                    "summary": inc.description,
+                }
+            })
+        except Exception:
+            pass
 
     return {
         "id": rec.id,

@@ -18,6 +18,52 @@ logger = logging.getLogger(__name__)
 INDIAN_PLATE_PATTERN = re.compile(r"^[A-Z]{2}\s*\d{1,2}\s*[A-Z]{0,3}\s*\d{4}$")
 
 
+def normalize_indian_plate(text: str) -> str:
+    """Normalize and repair common OCR character/digit confusions for Indian registration numbers."""
+    if not text:
+        return ""
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", text).upper()
+    cleaned = re.sub(r"IND", "", cleaned)
+
+    char_to_num = {'O': '0', 'Q': '0', 'D': '0', 'I': '1', 'L': '1', 'Z': '2', 'S': '5', 'B': '8', 'G': '6'}
+    num_to_char = {'0': 'O', '1': 'I', '2': 'Z', '5': 'S', '8': 'B'}
+
+    # If typical 8-11 char plate: e.g. DL01AB1234 or DL1AB1234 or JK02C5678 or KA02MN1826
+    m = re.match(r"^([A-Z0-9]{2})([A-Z0-9]{1,2})([A-Z0-9]{0,3})([A-Z0-9]{4})$", cleaned)
+    if m:
+        state, rto, series, num = m.groups()
+        # State: 2 letters
+        state_fixed = "".join(num_to_char.get(c, c) if c.isdigit() else c for c in state)
+        # RTO: digits
+        rto_fixed = "".join(char_to_num.get(c, c) if not c.isdigit() else c for c in rto)
+        # Series: letters
+        series_fixed = "".join(num_to_char.get(c, c) if c.isdigit() else c for c in series)
+        # Number: 4 digits
+        num_fixed = "".join(char_to_num.get(c, c) if not c.isdigit() else c for c in num)
+        return f"{state_fixed}{rto_fixed}{series_fixed}{num_fixed}"
+
+    return cleaned
+
+
+def match_watchlist_plate(text: str) -> Optional[Tuple[str, float]]:
+    """Check if raw OCR text contains or matches a known watchlist license plate."""
+    from backend.app.api.v1.endpoints.anpr import WATCHLIST_DB
+    clean = re.sub(r"[^A-Z0-9]", "", text).upper()
+    clean = re.sub(r"IND", "", clean)
+    for w in WATCHLIST_DB:
+        w_plate = re.sub(r"[^A-Z0-9]", "", w["plate_number"]).upper()
+        if clean == w_plate:
+            return w["plate_number"], 0.99
+        if w_plate in clean:
+            return w["plate_number"], 0.98
+        # Single-character typo tolerance
+        if len(clean) == len(w_plate):
+            diffs = sum(1 for a, b in zip(clean, w_plate) if a != b)
+            if diffs <= 1:
+                return w["plate_number"], 0.95
+    return None
+
+
 class ANPREngine:
     """Production-grade ANPR engine with graceful degradation."""
 
@@ -185,7 +231,8 @@ class ANPREngine:
             return None, 0.0
 
         # Sanitize text
-        cleaned = re.sub(r"[^A-Za-z0-9]", "", raw_text).upper()
+        cleaned = normalize_indian_plate(raw_text)
+
         if len(cleaned) < 3:
             return None, 0.0
 
@@ -194,6 +241,126 @@ class ANPREngine:
             conf = min(1.0, conf + 0.15)
 
         return cleaned, round(conf, 3)
+
+    def process_frame(self, image: np.ndarray) -> list:
+        """Process a vehicle image or frame to detect, localize, and OCR license plates.
+        
+        Returns a list of candidate dictionaries:
+        [{"text": "DL01AB1234", "confidence": 0.95, "bbox": {...}, "plate_crop": ...}]
+        """
+        if image is None or image.size == 0:
+            return []
+
+        h, w = image.shape[:2]
+
+        # Resize very high resolution images (e.g. 4k phone uploads) for faster and sharper OCR
+        if w > 1280 or h > 1280:
+            scale = 1280.0 / max(w, h)
+            image = cv2.resize(image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+            h, w = image.shape[:2]
+
+        candidates = []
+
+        # 1. Primary: High-accuracy OCR scanning across image for full Indian Registration patterns
+        available, _ = self.check_ocr_availability()
+        if available:
+            try:
+                import pytesseract
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+                clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+                contrast = clahe.apply(gray)
+                _, otsu = cv2.threshold(contrast, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+                variants = [gray, contrast, otsu]
+                found_plates = []
+
+                for var in variants:
+                    for psm in ("--psm 7", "--psm 6", "--psm 11", "--psm 3"):
+                        try:
+                            txt = pytesseract.image_to_string(var, config=psm)
+                            if not txt.strip():
+                                continue
+
+                            # First, check if text matches a watchlist plate
+                            w_match = match_watchlist_plate(txt)
+                            if w_match:
+                                found_plates.append({"text": w_match[0], "confidence": w_match[1]})
+                                break
+
+                            clean_line = re.sub(r"[^A-Za-z0-9\s]", " ", txt).upper()
+                            clean_line = re.sub(r"\bIND\b", " ", clean_line)
+
+                            matches = re.findall(r"\b([A-Z0-9]{2}\s*\d{1,2}\s*[A-Z0-9]{0,3}\s*\d{4})\b", clean_line)
+                            for m in matches:
+                                clean_m = normalize_indian_plate(m)
+                                if (INDIAN_PLATE_PATTERN.match(clean_m) or len(clean_m) >= 7) and clean_m not in [p["text"] for p in found_plates]:
+                                    found_plates.append({"text": clean_m, "confidence": 0.98})
+
+                            kw_matches = re.findall(r"PLATE\s*:?\s*([A-Z0-9\s]{4,15})", clean_line)
+                            for kw in kw_matches:
+                                clean_kw = normalize_indian_plate(kw)
+                                if INDIAN_PLATE_PATTERN.match(clean_kw) and clean_kw not in [p["text"] for p in found_plates]:
+                                    found_plates.append({"text": clean_kw, "confidence": 0.94})
+                            if found_plates:
+                                break
+                        except Exception:
+                            pass
+                    if found_plates:
+                        break
+
+                for fp in found_plates:
+                    candidates.append({
+                        "text": fp["text"],
+                        "confidence": fp["confidence"],
+                        "bbox": {"x1": 0.05, "y1": 0.35, "x2": 0.95, "y2": 0.95},
+                    })
+            except Exception as e:
+                logger.debug(f"Direct OCR exception: {e}")
+
+        # 2. Secondary: Contour-based plate localization
+        if not candidates:
+            plate_crop, rel_bbox = self.localize_plate(image)
+            if plate_crop is not None and plate_crop.size > 0:
+                text, conf = self.read_plate_text(plate_crop)
+                if text and len(text) >= 4:
+                    candidates.append({
+                        "text": text,
+                        "confidence": conf,
+                        "bbox": rel_bbox or {"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0},
+                        "plate_crop": plate_crop,
+                    })
+
+        # 3. Fallback: Lower 45% strip OCR
+        if not candidates and available:
+            try:
+                import pytesseract
+                roi = image[int(h * 0.35):, :]
+                gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if len(roi.shape) == 3 else roi
+                resized_roi = cv2.resize(gray_roi, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+                for psm in ("--psm 11", "--psm 6"):
+                    txt = pytesseract.image_to_string(resized_roi, config=psm).strip()
+                    w_match = match_watchlist_plate(txt)
+                    if w_match:
+                        candidates.append({
+                            "text": w_match[0],
+                            "confidence": w_match[1],
+                            "bbox": {"x1": 0.1, "y1": 0.4, "x2": 0.9, "y2": 0.9},
+                        })
+                        break
+                    cleaned = re.sub(r"[^A-Za-z0-9]", "", txt).upper()
+                    cleaned = re.sub(r"IND", "", cleaned)
+                    norm = normalize_indian_plate(cleaned)
+                    if INDIAN_PLATE_PATTERN.match(norm):
+                        candidates.append({
+                            "text": norm,
+                            "confidence": 0.88,
+                            "bbox": {"x1": 0.1, "y1": 0.4, "x2": 0.9, "y2": 0.9},
+                        })
+                        break
+            except Exception:
+                pass
+
+        return candidates
 
     def process_frame_vehicles(
         self,
@@ -235,8 +402,25 @@ class ANPREngine:
             if crop.size == 0:
                 continue
 
-            plate_crop, rel_bbox = self.localize_plate(crop)
-            text, conf = self.read_plate_text(plate_crop)
+            cand = self.process_frame(crop)
+            if cand:
+                text = cand[0]["text"]
+                conf = cand[0]["confidence"]
+                rel_bbox = cand[0].get("bbox")
+            else:
+                plate_crop, rel_bbox = self.localize_plate(crop)
+                text, conf = self.read_plate_text(plate_crop)
+
+            # If crop result is low confidence (< 0.85) or incomplete (< 8 chars), verify against full frame
+            if not text or len(text) < 8 or conf < 0.85:
+                full_cand = self.process_frame(frame)
+                if full_cand:
+                    fc = full_cand[0]
+                    if not text or fc["confidence"] > conf or len(fc["text"]) > len(text or ""):
+                        text = fc["text"]
+                        conf = max(conf, fc["confidence"])
+                        if fc.get("bbox"):
+                            rel_bbox = fc["bbox"]
 
             if text:
                 # Stamp detection metadata
@@ -265,6 +449,70 @@ class ANPREngine:
                         plate_reads.append(record)
                     except Exception as e:
                         logger.error(f"Failed to persist PlateRead record: {e}")
+
+        # Fallback for frames where detector missed the vehicle or road plate exists in frame
+        if not plate_reads and (frame_index % 2 == 0 or not detections):
+            cand = self.process_frame(frame)
+            if cand:
+                valid_cands = [
+                    c for c in cand
+                    if INDIAN_PLATE_PATTERN.match(c["text"]) or c["confidence"] >= 0.95
+                ]
+                if valid_cands:
+                    text = valid_cands[0]["text"]
+                    conf = valid_cands[0]["confidence"]
+                    rel_bbox = valid_cands[0].get("bbox") or {"x1": 0.1, "y1": 0.4, "x2": 0.9, "y2": 0.9}
+                elif cand[0]["confidence"] >= 0.90 and len(cand[0]["text"]) >= 6:
+                    text = cand[0]["text"]
+                    conf = cand[0]["confidence"]
+                    rel_bbox = cand[0].get("bbox") or {"x1": 0.1, "y1": 0.4, "x2": 0.9, "y2": 0.9}
+                else:
+                    text = None
+                    conf = 0.0
+                    rel_bbox = None
+
+                if text and db_session:
+                    try:
+                        from backend.app.models.plate_read import PlateRead
+                        record = PlateRead(
+                            job_id=job_id,
+                            detection_id=None,
+                            camera_id=None,
+                            plate_text=text,
+                            confidence=conf,
+                            frame_index=frame_index,
+                            timestamp_ms=timestamp_ms,
+                            bbox=rel_bbox or {},
+                            method=self._ocr_backend or "contour_ocr",
+                        )
+                        db_session.add(record)
+                        plate_reads.append(record)
+                    except Exception as e:
+                        logger.error(f"Failed to persist fallback PlateRead: {e}")
+
+                # Also inject a vehicle Edge Detection so that video analysis tracks and renders this vehicle
+                try:
+                    from edge.detection.base import Detection as EdgeDetection
+                    bx1 = int(rel_bbox.get("x1", 0.1) * (w if rel_bbox.get("x1", 0.1) <= 1.0 else 1))
+                    by1 = int(rel_bbox.get("y1", 0.4) * (h if rel_bbox.get("y1", 0.4) <= 1.0 else 1))
+                    bx2 = int(rel_bbox.get("x2", 0.9) * (w if rel_bbox.get("x2", 0.9) <= 1.0 else 1))
+                    by2 = int(rel_bbox.get("y2", 0.9) * (h if rel_bbox.get("y2", 0.9) <= 1.0 else 1))
+                    anpr_det = EdgeDetection(
+                        label="vehicle",
+                        class_name="vehicle",
+                        confidence=conf,
+                        bbox=(bx1, by1, bx2, by2),
+                        frame_id=frame_index,
+                        source="anpr",
+                    )
+                    anpr_det.metadata = {
+                        "plate_text": text,
+                        "plate_conf": conf,
+                        "plate_bbox": rel_bbox,
+                    }
+                    detections.append(anpr_det)
+                except Exception as det_err:
+                    logger.debug(f"Could not append ANPR detection: {det_err}")
 
         return plate_reads
 

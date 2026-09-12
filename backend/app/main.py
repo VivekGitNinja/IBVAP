@@ -14,6 +14,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 import uuid
+import jwt
 from backend.app.db.session import engine, SessionLocal
 from backend.app.db.base import Base
 from backend.app.db.migrator import run_database_migrations
@@ -101,43 +102,8 @@ async def lifespan(app: FastAPI):
             ))
             db.commit()
 
-        # Create demo cameras only if explicitly enabled in configuration
-        if settings.enable_demo and settings.enable_synthetic_cameras and db.query(Camera).count() == 0:
-            demo_cameras = [
-                Camera(
-                    name="BOP-01 Gate Camera", stream_url="demo://synthetic",
-                    location="Demo Border Sector Alpha", bop="BOP-01",
-                    status="ONLINE", health_score=98, latitude=28.6139,
-                    longitude=77.2090, fps=10, resolution="1280x720",
-                ),
-                Camera(
-                    name="BOP-01 Perimeter Cam", stream_url="demo://synthetic",
-                    location="Demo Border Sector Alpha", bop="BOP-01",
-                    status="ONLINE", health_score=95, latitude=28.6145,
-                    longitude=77.2100, fps=10, resolution="1280x720",
-                ),
-                Camera(
-                    name="BOP-02 Watchtower Cam", stream_url="demo://synthetic",
-                    location="Demo Border Sector Beta", bop="BOP-02",
-                    status="ONLINE", health_score=92, latitude=28.6200,
-                    longitude=77.2150, fps=15, resolution="1920x1080",
-                ),
-                Camera(
-                    name="BOP-03 Road Checkpoint", stream_url="demo://synthetic",
-                    location="Demo Border Sector Gamma", bop="BOP-03",
-                    status="DEGRADED", health_score=62, latitude=28.6250,
-                    longitude=77.2200, fps=8, resolution="1280x720",
-                ),
-                Camera(
-                    name="BOP-04 Night Patrol", stream_url="demo://synthetic",
-                    location="Demo Border Sector Delta", bop="BOP-04",
-                    status="OFFLINE", health_score=0, latitude=28.6300,
-                    longitude=77.2250, fps=10, resolution="640x480",
-                ),
-            ]
-            for cam in demo_cameras:
-                db.add(cam)
-            db.commit()
+        # Demo camera auto-creation disabled — only real hardware cameras used
+        # (Previously created synthetic cameras have been removed per user request)
 
         # ── Wire live pipeline events → WebSocket broadcast (STARTUP) ──
         def on_live_event(event):
@@ -157,7 +123,6 @@ async def lifespan(app: FastAPI):
         try:
             cameras = db.query(Camera).filter(
                 Camera.stream_url.notlike("demo://%"),
-                Camera.stream_url.notlike("usb://%"),
                 Camera.stream_url.notlike(""),
                 Camera.active == True,
             ).all()
@@ -369,6 +334,10 @@ async def websocket_events(websocket: WebSocket):
             return
         try:
             decode_access_token(token)
+        except jwt.ExpiredSignatureError:
+            if settings.environment != "development":
+                await websocket.close(code=1008, reason="Expired token")
+                return
         except Exception:
             await websocket.close(code=1008, reason="Invalid token")
             return
@@ -455,6 +424,10 @@ async def websocket_live_stream(websocket: WebSocket, camera_id: int):
             return
         try:
             decode_access_token(token)
+        except jwt.ExpiredSignatureError:
+            if settings.environment != "development":
+                await websocket.close(code=1008, reason="Expired token")
+                return
         except Exception:
             await websocket.close(code=1008, reason="Invalid token")
             return
@@ -462,8 +435,9 @@ async def websocket_live_stream(websocket: WebSocket, camera_id: int):
     await websocket.accept()
     try:
         import cv2
+        from concurrent.futures import ThreadPoolExecutor
         from backend.app.models.camera import Camera
-        from backend.app.api.v1.endpoints.cameras import stream_manager, _generate_tactical_frame, _generate_offline_frame
+        from backend.app.api.v1.endpoints.cameras import stream_manager, get_cached_offline_jpeg
 
         db = SessionLocal()
         cam = db.get(Camera, camera_id)
@@ -474,27 +448,58 @@ async def websocket_live_stream(websocket: WebSocket, camera_id: int):
             return
 
         url = cam.stream_url or ""
-        fps = max(5, min(25, cam.fps or 15))
-        interval = 1.0 / fps
-        frame_idx = 0
+        target_fps = max(8, min(20, cam.fps or 12))
+        interval = 1.0 / target_fps
+
+        _WS_JPEG_QUALITY = 55  # lower quality = faster encode + smaller payload
+        _WS_MAX_WIDTH = 640    # downscale large frames for streaming speed
+        _encode_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ws-enc")
+
+        def _encode_frame(frame):
+            """Downscale + JPEG encode in worker thread (never blocks async loop)."""
+            h, w = frame.shape[:2]
+            if w > _WS_MAX_WIDTH:
+                scale = _WS_MAX_WIDTH / w
+                frame = cv2.resize(frame, (int(w * scale), int(h * scale)),
+                                   interpolation=cv2.INTER_AREA)
+            ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, _WS_JPEG_QUALITY])
+            return buf.tobytes() if ret else None
+
+        _prev_frame_id = None  # dedup identical ring-buffer reads
+        _cached_jpeg = None
 
         while True:
-            frame_idx += 1
-            raw = None
-            if not url.startswith("demo://") and url:
+            if not cam.active or cam.status == "OFFLINE" or url.startswith("demo://") or not url:
+                offline_bytes = get_cached_offline_jpeg(cam)
+                await websocket.send_bytes(offline_bytes)
+                await asyncio.sleep(2.0)
+                continue
+
+            # Fast path: grab latest frame from live pipeline ring buffer
+            from backend.app.services.live_pipeline import live_manager
+            raw = live_manager.get_latest_frame(camera_id)
+            if raw is None:
                 raw = stream_manager.get_frame(url)
 
             if raw is None:
-                if settings.enable_demo and settings.enable_synthetic_cameras:
-                    raw = _generate_tactical_frame(cam, frame_idx)
-                else:
-                    raw = _generate_offline_frame(cam)
+                offline_bytes = get_cached_offline_jpeg(cam)
+                await websocket.send_bytes(offline_bytes)
+                await asyncio.sleep(0.5)
+                continue
 
-            ret, jpeg = cv2.imencode(".jpg", raw, [cv2.IMWRITE_JPEG_QUALITY, 68])
-            if ret:
-                await websocket.send_bytes(jpeg.tobytes())
+            # Deduplicate: skip encode if same frame object (ring buffer not advanced)
+            cur_id = id(raw)
+            if cur_id != _prev_frame_id or _cached_jpeg is None:
+                _prev_frame_id = cur_id
+                loop = asyncio.get_event_loop()
+                _cached_jpeg = await loop.run_in_executor(_encode_pool, _encode_frame, raw)
+
+            if _cached_jpeg:
+                await websocket.send_bytes(_cached_jpeg)
 
             await asyncio.sleep(interval)
+
+        _encode_pool.shutdown(wait=False)
     except (WebSocketDisconnect, asyncio.CancelledError):
         pass
     except Exception:

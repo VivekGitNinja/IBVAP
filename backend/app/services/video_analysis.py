@@ -34,10 +34,12 @@ from backend.app.models.evidence import Evidence
 from backend.app.models.zone import Zone
 from backend.app.models.plate_read import PlateRead
 from backend.app.models.watchlist import Watchlist
+from backend.app.models.alert import Alert
 from backend.app.services.anpr import anpr_engine
 from backend.app.services.face import face_service
 from backend.app.services.evidence import transcode_and_seal_clip
 from backend.app.services.c2 import dispatch_incident_webhook
+from backend.app.services.live_pipeline import live_manager
 from edge.detection.factory import create_detector
 from edge.tracking.centroid import CentroidTracker
 from edge.zones.fence import ZoneFence
@@ -308,7 +310,7 @@ class VideoAnalysisEngine:
 
                 # ANPR pipeline: extract license plates from vehicle detections
                 if enable_anpr:
-                    anpr_engine.process_frame_vehicles(
+                    found_prs = anpr_engine.process_frame_vehicles(
                         frame=frame,
                         detections=detections,
                         job_id=job_id,
@@ -316,6 +318,137 @@ class VideoAnalysisEngine:
                         timestamp_ms=timestamp_ms,
                         db_session=db,
                     )
+                    if found_prs:
+                        from backend.app.api.v1.endpoints.anpr import WATCHLIST_DB
+                        for pr in found_prs:
+                            p_clean = pr.plate_text.replace(" ", "").upper()
+                            is_flagged = any(w["plate_number"].replace(" ", "").upper() == p_clean for w in WATCHLIST_DB)
+
+                            last_plate_ts = watchlist_match_cooldown.get(f"plate_{p_clean}")
+                            now_ts = frame_dt.timestamp()
+                            if last_plate_ts is None or (now_ts - last_plate_ts >= 8.0):
+                                watchlist_match_cooldown[f"plate_{p_clean}"] = now_ts
+                                incidents_recorded += 1
+
+                                sev = "CRITICAL" if is_flagged else "HIGH"
+                                threat_score = 98.0 if is_flagged else 75.0
+                                inc_code = f"INC-JOB{job_id}-ANPR-{p_clean}-{uuid.uuid4().hex[:4].upper()}"
+                                ev_fn = f"ev_job_{job_id}_anpr_{p_clean}_{frame_index}.jpg"
+                                ev_fp = evidence_dir / ev_fn
+
+                                ann_p_frame = frame.copy()
+                                cv2.putText(
+                                    ann_p_frame,
+                                    f"{'STOLEN LOOKOUT MATCH' if is_flagged else 'ANPR VEHICLE LOG'}: {pr.plate_text} ({pr.confidence:.0%})",
+                                    (20, 40),
+                                    cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.7,
+                                    (0, 0, 255) if is_flagged else (0, 240, 255),
+                                    2,
+                                )
+                                cv2.imwrite(str(ev_fp), ann_p_frame)
+                                with open(ev_fp, "rb") as ef:
+                                    ev_hash = hashlib.sha256(ef.read()).hexdigest()
+
+                                inc = Incident(
+                                    incident_code=inc_code,
+                                    title=f"Stolen Vehicle Intercept: {pr.plate_text} (Barrier Triggered)" if is_flagged else f"Vehicle Plate Scanned: {pr.plate_text}",
+                                    description=f"Vehicle registration plate '{pr.plate_text}' matched stolen vehicle database with {pr.confidence:.0%} confidence at {timestamp_ms/1000.0:.2f}s." if is_flagged else f"Vehicle license plate '{pr.plate_text}' identified via ANPR OCR.",
+                                    severity=sev,
+                                    threat_score=threat_score,
+                                    confidence=pr.confidence,
+                                    status="OPEN",
+                                    camera_id=camera_id,
+                                    camera_name=f"Upload Media #{media_id}" if media_id else "Camera Feed",
+                                    job_id=job_id,
+                                    media_id=media_id,
+                                    reason_codes=["STOLEN_VEHICLE_MATCH" if is_flagged else "ANPR_VEHICLE_LOG", f"PLATE_{p_clean}"],
+                                    ai_assessment={
+                                        "model": "ANPR OCR",
+                                        "plate_number": pr.plate_text,
+                                        "confidence": pr.confidence,
+                                        "stolen_flagged": is_flagged,
+                                        "frame": frame_index,
+                                        "timestamp_ms": round(timestamp_ms, 2),
+                                        "legal_citation": "Bharatiya Sakshya Adhiniyam, 2023 — Section 63",
+                                    },
+                                )
+                                db.add(inc)
+                                db.flush()
+
+                                ev = Evidence(
+                                    incident_id=inc.id,
+                                    evidence_type="snapshot",
+                                    file_path=str(ev_fp),
+                                    sha256=ev_hash,
+                                    manifest_path=str(ev_fp) + ".json",
+                                    manifest_data={"job_id": job_id, "plate": pr.plate_text, "stolen": is_flagged, "statute": "BSA_2023_SEC_63"},
+                                    file_size_bytes=os.path.getsize(ev_fp),
+                                    threat_score=threat_score,
+                                    camera_id=camera_id,
+                                    camera_name=inc.camera_name,
+                                    detection_metadata={"plate_text": pr.plate_text, "confidence": pr.confidence, "stolen": is_flagged},
+                                )
+                                db.add(ev)
+
+                                alert = Alert(
+                                    incident_id=inc.id,
+                                    priority=sev,
+                                    status="NEW",
+                                    message=f"{sev}: Vehicle license plate '{pr.plate_text}' {'matched STOLEN WATCHLIST (Barrier Armed)' if is_flagged else 'logged via ANPR checkpost'} (Score: {threat_score:.0f}/100)",
+                                )
+                                db.add(alert)
+                                db.flush()
+
+                                try:
+                                    live_manager._on_event({
+                                        "type": "incident_created",
+                                        "data": {
+                                            "id": inc.id,
+                                            "incident_code": inc.incident_code,
+                                            "incident_type": inc.title,
+                                            "severity": inc.severity,
+                                            "threat_score": inc.threat_score,
+                                            "confidence": inc.confidence,
+                                            "bop": "Checkpost",
+                                            "camera_name": inc.camera_name,
+                                            "summary": inc.description,
+                                        }
+                                    })
+                                except Exception:
+                                    pass
+
+                                dispatch_incident_webhook(
+                                    {
+                                        "incident_code": inc.incident_code,
+                                        "title": inc.title,
+                                        "severity": inc.severity,
+                                        "threat_score": inc.threat_score,
+                                        "confidence": inc.confidence,
+                                        "zone_name": inc.zone_name,
+                                        "camera_id": camera_id,
+                                        "track_ids": inc.track_ids or [],
+                                    },
+                                    {"id": ev.id, "evidence_type": ev.evidence_type, "sha256": ev.sha256}
+                                )
+
+                                broadcast_job_event_sync(job_id, {
+                                    "event": "incident_created",
+                                    "job_id": job_id,
+                                    "incident": {
+                                        "id": inc.id,
+                                        "incident_code": inc_code,
+                                        "title": inc.title,
+                                        "severity": inc.severity,
+                                        "threat_score": inc.threat_score,
+                                        "timestamp_ms": round(timestamp_ms, 2),
+                                        "label": "vehicle",
+                                        "track_id": f"PLATE-{p_clean}",
+                                        "confidence": float(pr.confidence),
+                                        "evidence_file": ev_fn,
+                                        "sha256": ev_hash,
+                                    }
+                                })
 
                 # Face intelligence: detect faces and match against enrolled watchlist
                 if enable_face:
@@ -397,6 +530,34 @@ class VideoAnalysisEngine:
                                         detection_metadata={"subject_name": subject.name, "similarity": similarity},
                                     )
                                     db.add(ev)
+
+                                    alert = Alert(
+                                        incident_id=inc.id,
+                                        priority="CRITICAL",
+                                        status="NEW",
+                                        message=f"CRITICAL: Watchlist suspect '{subject.name}' detected in uploaded media (Similarity: {similarity:.1%}, Score: {threat_score:.0f}/100)",
+                                    )
+                                    db.add(alert)
+                                    db.flush()
+
+                                    try:
+                                        live_manager._on_event({
+                                            "type": "incident_created",
+                                            "data": {
+                                                "id": inc.id,
+                                                "incident_code": inc.incident_code,
+                                                "incident_type": inc.title,
+                                                "severity": inc.severity,
+                                                "threat_score": inc.threat_score,
+                                                "confidence": inc.confidence,
+                                                "bop": "Sector",
+                                                "camera_name": inc.camera_name,
+                                                "summary": inc.description,
+                                            }
+                                        })
+                                    except Exception:
+                                        pass
+
                                     dispatch_incident_webhook(
                                         {
                                             "incident_code": inc.incident_code,
@@ -553,6 +714,34 @@ class VideoAnalysisEngine:
                                 detection_metadata={"label": det.class_name, "track_id": tid, "confidence": float(det.confidence), "bbox": [x1, y1, x2, y2]},
                             )
                             db.add(ev)
+
+                            alert = Alert(
+                                incident_id=inc.id,
+                                priority=inc.severity,
+                                status="NEW",
+                                message=f"{inc.severity} incident: {inc.title} (Score: {threat_score:.0f}/100)",
+                            )
+                            db.add(alert)
+                            db.flush()
+
+                            try:
+                                live_manager._on_event({
+                                    "type": "incident_created",
+                                    "data": {
+                                        "id": inc.id,
+                                        "incident_code": inc.incident_code,
+                                        "incident_type": inc.title,
+                                        "severity": inc.severity,
+                                        "threat_score": inc.threat_score,
+                                        "confidence": inc.confidence,
+                                        "bop": zname or "Perimeter",
+                                        "camera_name": inc.camera_name,
+                                        "summary": inc.description,
+                                    }
+                                })
+                            except Exception:
+                                pass
+
                             dispatch_incident_webhook(
                                 {
                                     "incident_code": inc.incident_code,
@@ -671,6 +860,34 @@ class VideoAnalysisEngine:
                             detection_metadata={"label": det.class_name, "track_id": tid, "confidence": float(det.confidence), "bbox": [x1, y1, x2, y2]},
                         )
                         db.add(ev)
+
+                        alert = Alert(
+                            incident_id=inc.id,
+                            priority=inc.severity,
+                            status="NEW",
+                            message=f"{inc.severity} incident: {inc.title} (Score: {threat_score:.0f}/100)",
+                        )
+                        db.add(alert)
+                        db.flush()
+
+                        try:
+                            live_manager._on_event({
+                                "type": "incident_created",
+                                "data": {
+                                    "id": inc.id,
+                                    "incident_code": inc.incident_code,
+                                    "incident_type": inc.title,
+                                    "severity": inc.severity,
+                                    "threat_score": inc.threat_score,
+                                    "confidence": inc.confidence,
+                                    "bop": "Perimeter",
+                                    "camera_name": inc.camera_name,
+                                    "summary": inc.description,
+                                }
+                            })
+                        except Exception:
+                            pass
+
                         dispatch_incident_webhook(
                             {
                                 "incident_code": inc.incident_code,
@@ -795,6 +1012,34 @@ class VideoAnalysisEngine:
                         detection_metadata={"behavior": b_type, "details": bevt},
                     )
                     db.add(ev)
+
+                    alert = Alert(
+                        incident_id=inc.id,
+                        priority=inc.severity,
+                        status="NEW",
+                        message=f"{inc.severity} incident: {inc.title} (Score: {threat_score:.0f}/100)",
+                    )
+                    db.add(alert)
+                    db.flush()
+
+                    try:
+                        live_manager._on_event({
+                            "type": "incident_created",
+                            "data": {
+                                "id": inc.id,
+                                "incident_code": inc.incident_code,
+                                "incident_type": inc.title,
+                                "severity": inc.severity,
+                                "threat_score": inc.threat_score,
+                                "confidence": inc.confidence,
+                                "bop": inc.zone_name or "Sector",
+                                "camera_name": inc.camera_name,
+                                "summary": inc.description,
+                            }
+                        })
+                    except Exception:
+                        pass
+
                     dispatch_incident_webhook(
                         {
                             "incident_code": inc.incident_code,

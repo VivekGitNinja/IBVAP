@@ -21,7 +21,7 @@ export function MediaAnalysisView() {
   const [confidenceThreshold, setConfidenceThreshold] = useState<number>(0.35);
   const [selectedZoneIds, setSelectedZoneIds] = useState<number[]>([]);
   const [enableTracking, setEnableTracking] = useState(true);
-  const [enableAnpr, setEnableAnpr] = useState(false);
+  const [enableAnpr, setEnableAnpr] = useState(true);
   const [enableBehavior, setEnableBehavior] = useState(true);
   const [enableNightMode, setEnableNightMode] = useState(true);
   const [enableFace, setEnableFace] = useState(false);
@@ -208,7 +208,10 @@ export function MediaAnalysisView() {
           }
         } else if (data.event === "job_completed") {
           playTacticalTone("verify");
-          api.analysisResults(jid).then(setActiveResults);
+          api.analysisResults(jid).then((res: any) => {
+            setActiveResults(res);
+            setActiveJob(res);
+          });
           api.analysisJobTracks(jid).then((res: any) => setJobTracks(res.tracks || []));
         }
       } catch (err) {
@@ -222,7 +225,7 @@ export function MediaAnalysisView() {
     };
   }, [activeJobId]);
 
-  // Track polyline canvas renderer
+  // Track polyline & detection bounding box canvas renderer
   const drawTrailsOnCanvas = (currentTimeSec: number) => {
     const canvas = trailCanvasRef.current;
     const video = videoPlayerRef.current;
@@ -241,6 +244,7 @@ export function MediaAnalysisView() {
     const fps = activeJob?.fps || 15.0;
     const currentFrame = Math.floor(currentTimeSec * fps);
 
+    // 1. Draw persistent track trails
     jobTracks.forEach((tr) => {
       const isSelected = selectedTrackId === tr.track_id;
       if (!isSelected && selectedTrackId !== null) return;
@@ -285,6 +289,100 @@ export function MediaAnalysisView() {
       ctx.fillStyle = isSelected ? "#00ff9d" : "#94a3b8";
       ctx.fillText(tr.track_id, hx + 6, hy + 3);
     });
+
+    // 2. Draw current-frame detection bounding boxes & plate chips
+    const allDets = activeResults?.detections || [];
+    if (allDets.length > 0) {
+      const vWidth = video.videoWidth || canvas.width || 640;
+      const vHeight = video.videoHeight || canvas.height || 360;
+
+      // Filter detections belonging to current frame (within +/- 1 frame window)
+      const frameDets = allDets.filter((d: any) => {
+        const fIdx = d.frame ?? d.frame_index ?? 0;
+        if (selectedTrackId && String(d.track_id) !== String(selectedTrackId)) return false;
+        return Math.abs(fIdx - currentFrame) <= 1;
+      });
+
+      frameDets.forEach((det: any) => {
+        const rawBbox = det.bbox || [det.bbox_x1, det.bbox_y1, det.bbox_x2, det.bbox_y2];
+        if (!rawBbox || rawBbox.length !== 4) return;
+
+        let [x1, y1, x2, y2] = rawBbox;
+        let bx: number, by: number, bw: number, bh: number;
+
+        if (x1 <= 1.0 && x2 <= 1.0 && y1 <= 1.0 && y2 <= 1.0) {
+          bx = x1 * canvas.width;
+          by = y1 * canvas.height;
+          bw = (x2 - x1) * canvas.width;
+          bh = (y2 - y1) * canvas.height;
+        } else {
+          const scaleX = canvas.width / vWidth;
+          const scaleY = canvas.height / vHeight;
+          bx = x1 * scaleX;
+          by = y1 * scaleY;
+          bw = (x2 - x1) * scaleX;
+          bh = (y2 - y1) * scaleY;
+        }
+
+        if (bw <= 0 || bh <= 0) return;
+
+        const label = (det.label || "OBJECT").toLowerCase();
+        const conf = Number(det.confidence || 0.85);
+        const tid = det.track_id ? `TRK-${det.track_id}` : "";
+        const payload = det.payload || det.metadata || {};
+        const plateText = det.plate_text || payload.plate_text;
+
+        let boxColor = "#00f0ff";
+        if (label === "person") {
+          boxColor = "#00ff9d";
+        } else if (["car", "truck", "bus", "motorcycle", "vehicle"].includes(label)) {
+          boxColor = plateText ? "#00f0ff" : "#ffaa00";
+        } else if (label === "face") {
+          boxColor = "#00f0ff";
+        }
+
+        // Draw bounding box
+        ctx.save();
+        ctx.strokeStyle = boxColor;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(bx, by, bw, bh);
+
+        // Corner accents
+        const cLen = Math.min(10, bw / 3, bh / 3);
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(bx, by + cLen); ctx.lineTo(bx, by); ctx.lineTo(bx + cLen, by);
+        ctx.moveTo(bx + bw - cLen, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + cLen);
+        ctx.moveTo(bx, by + bh - cLen); ctx.lineTo(bx, by + bh); ctx.lineTo(bx + cLen, by + bh);
+        ctx.moveTo(bx + bw - cLen, by + bh); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw, by + bh - cLen);
+        ctx.stroke();
+
+        // Label pill
+        const tagText = `${label.toUpperCase()} ${tid ? `[${tid}] ` : ""}${(conf * 100).toFixed(0)}%`;
+        ctx.font = "bold 10px monospace";
+        const tagWidth = ctx.measureText(tagText).width;
+        ctx.fillStyle = "rgba(4, 11, 20, 0.88)";
+        ctx.fillRect(bx, Math.max(0, by - 17), tagWidth + 8, 16);
+        ctx.fillStyle = boxColor;
+        ctx.fillText(tagText, bx + 4, Math.max(11, by - 5));
+
+        // License plate badge
+        if (plateText) {
+          const pText = `🚗 IND ${plateText}`;
+          ctx.font = "bold 10px monospace";
+          const pWidth = ctx.measureText(pText).width;
+          const py = by + bh + 3;
+          ctx.fillStyle = "rgba(0, 0, 0, 0.92)";
+          ctx.fillRect(bx, py, pWidth + 10, 18);
+          ctx.strokeStyle = "#00ff9d";
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(bx, py, pWidth + 10, 18);
+          ctx.fillStyle = "#ffffff";
+          ctx.fillText(pText, bx + 5, py + 13);
+        }
+        ctx.restore();
+      });
+    }
   };
 
   const handleSelectTrack = (tid: string) => {
@@ -463,7 +561,7 @@ export function MediaAnalysisView() {
     playTacticalTone("click");
     try {
       const job = await api.createAnalysisJob({
-        source_type: "media",
+        source_type: "upload",
         source_id: selectedAssetForJob.id,
         detector_model: detectorModel,
         confidence_threshold: confidenceThreshold,
@@ -854,13 +952,16 @@ export function MediaAnalysisView() {
                     variant="card"
                   >
                     <div style={{ position: "relative", background: "#000", minHeight: 260, display: "flex", justifyContent: "center", alignItems: "center", overflow: "hidden" }}>
-                      {activeJob.source_type === "upload" && activeJob.source_id ? (
+                      {(activeJob.source_type === "upload" || activeJob.source_type === "media") && (activeJob.source_id || activeJob.id) ? (
                         <video
                           ref={videoPlayerRef}
                           controls
-                          src={`/api/v1/media/${activeJob.source_id}/stream`}
+                          src={`/api/v1/media/${activeJob.source_id || activeJob.id}/stream`}
                           className={sensorSkin === "nvg" ? "tactical-sensor-skin-nvg" : sensorSkin === "flir" ? "tactical-sensor-skin-flir" : ""}
                           onTimeUpdate={(e) => drawTrailsOnCanvas(e.currentTarget.currentTime)}
+                          onLoadedMetadata={() => drawTrailsOnCanvas(videoPlayerRef.current?.currentTime || 0)}
+                          onPlay={() => drawTrailsOnCanvas(videoPlayerRef.current?.currentTime || 0)}
+                          onSeeked={() => drawTrailsOnCanvas(videoPlayerRef.current?.currentTime || 0)}
                           style={{ width: "100%", maxHeight: 360, display: "block" }}
                         />
                       ) : (
@@ -1170,13 +1271,15 @@ export function MediaAnalysisView() {
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 250, overflowY: "auto" }}>
                   {filteredDetections.slice(0, 30).map((det: any, idx: number) => {
-                    const payload = det.payload || {};
+                    const payload = det.payload || det.metadata || {};
                     const isNight = payload.night;
                     const plateText = payload.plate_text;
 
                     return (
                       <div
                         key={idx}
+                        className="tactical-track-card"
+                        data-testid="detection-card"
                         style={{
                           background: "rgba(0,0,0,0.25)",
                           border: "1px solid rgba(255, 255, 255, 0.06)",

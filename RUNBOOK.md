@@ -499,4 +499,138 @@ rm -f ibvap.db && .venv/bin/pytest backend/tests/ -v --tb=short
 
 ---
 
+## 16. FINAL DEMO RUN-SHEET (Exact Evaluator Script)
+
+This step-by-step walkthrough is designed for SIH 2026 evaluators and SSB operational officers to evaluate the complete end-to-end capabilities of IBVAP in under 10 minutes.
+
+### Pre-requisites & Verification
+Ensure backend and frontend are running:
+```bash
+# Terminal 1: Backend API
+.venv/bin/python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8001
+
+# Terminal 2: Frontend Tactical Console
+npm run dev -- --host 0.0.0.0 --port 5173
+```
+Run the automated system doctor:
+```bash
+.venv/bin/python3 scripts/doctor.py
+```
+*Expected: All 18 diagnostics pass (Python, OpenCV, Models, Database, Storage, Air-gap).*
+
+---
+
+### Step 1: Tactical Clearance & Role-Based Access Control (RBAC)
+1. Open Chrome browser to `http://localhost:5173`.
+2. Observe the **IBVAP // C4ISR Clearance** modal.
+3. Test failed authorization: enter operator identifier `invalid_user` and security key `bad_key` -> click **AUTHENTICATE**.
+   - *Expected:* Visible red alert banner `Invalid credentials`. No unauthorized access granted.
+4. Authenticate as authorized operator: click preset **OPERATOR** (or enter `operator` / `Operator@123`) -> click **AUTHENTICATE**.
+   - *Expected:* Modal unlocks and transitions into **DEFCON 4 / ROUTINE** Tactical Command Console.
+
+---
+
+### Step 2: Live RTSP Stream Provisioning
+1. In the sidebar, navigate to **Tactical Matrix** (`/?view=cameras`).
+2. Observe the multi-camera surveillance matrix (Cameras 1-8).
+3. Click **Deploy Camera** to test RTSP provisioning:
+   - Select brand: **Generic RTSP Stream**.
+   - Enter invalid test endpoint: `10.255.255.1`.
+   - Click **Test Optical Connection** -> observe honest error `Link failure: RTSP stream unreachable`.
+4. To verify live RTSP camera in evaluation mode, run the verified RTSP evaluation harness:
+   ```bash
+   node scripts/verify_rtsp_demo.mjs
+   ```
+   - *Expected:* Camera provisions with real RTSP loopback stream, real-time FPS/latency telemetry, and object detections.
+
+---
+
+### Step 3: Tactical Video Studio & Media Ingestion
+1. Navigate to **Video Studio** (`/?view=media`).
+2. Demonstrate drag-and-drop or file upload:
+   - Select `samples/vehicle_plate.mp4`.
+3. Observe instant ingestion:
+   - Probed metadata: resolution `640x480`, duration `6.0s`, frame rate `10.0 FPS`.
+   - Cryptographic SHA-256 digest computed on byte ingestion.
+4. Click **Stream** on the uploaded clip:
+   - *Expected:* Video preview opens and plays in browser via air-gapped HTML5 video pipeline.
+
+---
+
+### Step 4: Edge Computer Vision Pipeline Execution
+1. Click **⚡ Analyze** on `vehicle_plate.mp4`.
+2. In the **Configure Edge CV Pipeline** modal:
+   - Select Detector Model: `yolo11n` (Ultralytics Edge ONNX).
+   - Check **License Plate (ANPR)** and **Multi-Object Tracking (BoT-SORT)**.
+   - Click **🚀 Launch Pipeline Job**.
+3. Observe real-time telemetry:
+   - Progress bar increases deterministically across polls.
+   - **REAL FRAME DETECTIONS FEED** populates with vehicle detections, track identifiers (`TRK-T-0`), and plate chips (`🚗 DL01AB1234`).
+   - Click any `TRK-` badge to highlight the track path and seek video to first appearance.
+
+---
+
+### Step 5: Virtual Fence Tripwire & Intrusion Escalation
+1. On the Video Studio page, click **Virtual Fence Studio**.
+2. Draw a **Tripwire Line**:
+   - Click two points across the roadway/perimeter.
+   - Zone Name: `Perimeter Bravo Line`.
+   - Crossing Direction: `Either Direction`.
+   - Click **Save Virtual Fence Zone**.
+3. Upload and analyze `samples/day_crossing.mp4` with the zone active.
+4. Navigate to **Threat Queue** (`/?view=incidents`):
+   - *Expected:* Instant intrusion incident escalation with code `INC-...-LINE_BREACH`, threat score >= 85, and legal statutory citation.
+
+---
+
+### Step 6: ANPR License Plate Intelligence
+1. Navigate to **ANPR Checkpost** (`/?view=anpr`).
+2. Search query: enter `DL01` in the tactical search input.
+3. Observe filtered plate hits with confidence scores, vehicle bounding boxes, and timestamp logs.
+
+---
+
+### Step 7: Facial Recognition (FRS) Biometrics
+1. Navigate to **FRS Biometrics** (`/?view=frs`).
+2. Click **Enroll Suspect Biometrics**:
+   - Subject Name: `Suspect Target Alpha`.
+   - Upload portrait: `samples/suspect_portrait.jpg`.
+   - Click **Enroll Biometric Target**.
+   - *Expected:* Suspect enrolled into gallery with 128-d OpenCV SFace biometric embedding.
+3. Upload `samples/suspect_crossing.mp4` in Video Studio and run with **Face Watchlist Match** enabled.
+   - *Expected:* Real biometric match confirmed (similarity >= 36.3%), triggering a Critical FRS Alert.
+
+---
+
+### Step 8: Night Surveillance & CLAHE Low-Light Intelligence
+1. In Video Studio, upload `samples/night_crossing.mp4`.
+2. Launch analysis with **Night Luma & CLAHE** active.
+3. Observe:
+   - Mean luma calculated (<= 60.0).
+   - Contrast Limited Adaptive Histogram Equalization applied.
+   - Detection card flagged with `🌙 NIGHT` badge.
+
+---
+
+### Step 9: BSA 2023 §63 Forensic Evidence & Court-Admissible Report
+1. Navigate to **Evidence Locker** (`/?view=evidence`).
+2. Click on an evidence snapshot or incident clip.
+3. Click **Verify Hash**:
+   - Re-reads file from disk, computes SHA-256, and compares with manifest hash.
+   - *Expected:* Green validation banner `match: true` confirming cryptographic seal integrity under Bharatiya Sakshya Adhiniyam, 2023 §63.
+4. On Video Studio, click **Export PDF (BSA §63)**:
+   - Downloads official court-admissible forensic certificate.
+   - Verify containing statutory legal citation, digital hash seal, and officer declaration.
+5. Click **Export JSON** for automated C2 / Inter-Agency data sharing.
+
+---
+
+### Step 10: Situational Map & Air-Gap Resilience
+1. Navigate to **Situational Map** (`/?view=map`).
+2. Observe Leaflet tactical map with border BOP pins, camera fields-of-view, and active incident markers.
+3. Click an incident marker to open the slide-out inspector drawer with evidence snapshot.
+4. Verify air-gap isolation: open Developer Tools Network tab; zero external network requests made outside `localhost`.
+
+---
+
 *IBVAP RUNBOOK — SIH 2026 | MHA SSB PS-26187 | Prepared by IBVAP Engineering Team*

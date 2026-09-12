@@ -244,6 +244,10 @@ class FaceService:
 
         return None
 
+    def compute_embedding(self, image: np.ndarray) -> Tuple[Optional[List[float]], Optional[str]]:
+        """Extract facial recognition embedding from an image or face crop."""
+        return self.enroll_face(image)
+
     def enroll_face(self, image: np.ndarray) -> Tuple[Optional[List[float]], Optional[str]]:
         """Detect the largest face in an image and extract its 128-dim embedding.
         
@@ -262,28 +266,55 @@ class FaceService:
         # 1. Try YuNet
         if self._detector_type == "YuNet" and self._detector is not None:
             try:
-                self._detector.setInputSize((w, h))
-                _, detected = self._detector.detect(image)
+                det_w, det_h = w, h
+                scale = 1.0
+                if max(w, h) > 1280:
+                    scale = 1280.0 / max(w, h)
+                    det_w, det_h = int(w * scale), int(h * scale)
+                    det_img = cv2.resize(image, (det_w, det_h))
+                else:
+                    det_img = image
+
+                self._detector.setInputSize((det_w, det_h))
+                _, detected = self._detector.detect(det_img)
                 if detected is not None and len(detected) > 0:
                     largest_face = max(detected, key=lambda d: d[2] * d[3])
-                    aligned = self._recognizer.alignCrop(image, largest_face)
+                    if scale != 1.0:
+                        orig_face = largest_face.copy()
+                        orig_face[:14] = orig_face[:14] / scale
+                        aligned = self._recognizer.alignCrop(image, orig_face)
+                    else:
+                        aligned = self._recognizer.alignCrop(image, largest_face)
             except Exception as e:
                 logger.debug(f"YuNet enroll detect error: {e}")
 
         # 2. Try Haar Cascade fallback
         if aligned is None and self._haar_detector is not None:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
-            haar_faces = self._haar_detector.detectMultiScale(gray, 1.1, 3)
-            if len(haar_faces) > 0:
-                hx, hy, hw, hh = max(haar_faces, key=lambda r: r[2] * r[3])
-                aligned = cv2.resize(image[hy:hy+hh, hx:hx+hw], (112, 112))
+            try:
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+                haar_faces = self._haar_detector.detectMultiScale(gray, 1.1, 3)
+                if len(haar_faces) > 0:
+                    hx, hy, hw, hh = max(haar_faces, key=lambda r: r[2] * r[3])
+                    aligned = cv2.resize(image[hy:hy+hh, hx:hx+hw], (112, 112))
+            except Exception as e:
+                logger.debug(f"Haar detect error: {e}")
 
-        # 3. If image itself is already cropped face proportions (aspect 0.6 - 1.5)
-        if aligned is None and 0.6 <= (w / max(1, h)) <= 1.5 and min(w, h) >= 30:
-            # Check if there is basic variation (not a solid flat background)
+        # 3. Fallback: Upper-center 70% region (standard passport/portrait face area)
+        if aligned is None and min(w, h) >= 20:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
             if float(np.std(gray)) > 15.0:
-                aligned = cv2.resize(image, (112, 112))
+                try:
+                    cy1 = 0
+                    cy2 = int(h * 0.75)
+                    cx1 = int(w * 0.12)
+                    cx2 = int(w * 0.88)
+                    crop = image[cy1:cy2, cx1:cx2]
+                    if crop.size > 0:
+                        aligned = cv2.resize(crop, (112, 112))
+                    else:
+                        aligned = cv2.resize(image, (112, 112))
+                except Exception:
+                    aligned = cv2.resize(image, (112, 112))
 
         if aligned is None:
             return None, "no detectable face"

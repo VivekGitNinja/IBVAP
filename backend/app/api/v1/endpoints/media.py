@@ -51,8 +51,34 @@ def _sanitize_filename(filename: str) -> str:
 
 def _probe_video_metadata(file_path: str) -> dict:
     """Probe video dimensions, frame count, framerate, and duration using OpenCV."""
+    # Check if image file
+    _, ext = os.path.splitext(file_path)
+    if ext.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+        img = cv2.imread(file_path)
+        if img is not None:
+            ih, iw = img.shape[:2]
+            return {
+                "width": iw,
+                "height": ih,
+                "fps": 1.0,
+                "total_frames": 1,
+                "duration_seconds": 1.0,
+                "valid": True,
+            }
+
     cap = cv2.VideoCapture(file_path)
     if not cap.isOpened():
+        img = cv2.imread(file_path)
+        if img is not None:
+            ih, iw = img.shape[:2]
+            return {
+                "width": iw,
+                "height": ih,
+                "fps": 1.0,
+                "total_frames": 1,
+                "duration_seconds": 1.0,
+                "valid": True,
+            }
         return {
             "width": 0,
             "height": 0,
